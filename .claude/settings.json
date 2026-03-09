@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/jay/isaac_project/unitree_rl_lab/source/unitree_rl_lab -name \"*.pyc\" -delete)",
+      "Bash(chmod +x /home/jay/isaac_project/unitree_rl_lab/scripts/verify_flat_config.py)",
+      "Bash(ls -la docs/*.md)",
+      "Bash(python source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2w/velocity_env_cfg.py)",
+      "Bash(python3 -c \":*)"
+    ]
+  }
+}
