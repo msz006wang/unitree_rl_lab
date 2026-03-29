@@ -227,11 +227,11 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    # 使用更大的scale以支持更大幅度运动
+    # 使用中等scale以平衡稳定性和灵活性
     JointPositionAction = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        scale=0.5,  # 从0.3增加到0.5
+        scale=0.35,  # 从0.5降低到0.35，介于原始0.3和改进0.5之间
         use_default_offset=True
     )
 
@@ -285,14 +285,14 @@ class RewardsCfg:
     # 线速度跟踪（主要任务）
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=2.0,  # 增加权重
+        weight=1.0,  # 恢复到原始权重，优先稳定性
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
 
     # 角速度跟踪
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=1.0,  # 增加权重
+        weight=0.5,  # 恢复到原始权重，优先稳定性
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
 
@@ -331,14 +331,14 @@ class RewardsCfg:
     # 摔倒恢复奖励（从摔倒状态恢复）
     fall_recovery = RewTerm(
         func=extended_rewards.fall_recovery_reward,
-        weight=5.0,  # 高权重以鼓励恢复
+        weight=0.5,  # 大幅降低权重，避免诱导摔倒
         params={}
     )
 
     # 站起进度奖励
     stand_up_progress = RewTerm(
         func=extended_rewards.stand_up_progress_reward,
-        weight=2.0,
+        weight=0.3,  # 大幅降低权重，配合恢复奖励降低
         params={"target_height": 0.78, "std": 0.2}
     )
 
@@ -480,16 +480,16 @@ class TerminationsCfg:
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
-    # 降低最小高度阈值，允许机器人摔倒后尝试恢复
+    # 适度收紧最小高度阈值，提高稳定性
     base_height = DoneTerm(
         func=mdp.root_height_below_minimum,
-        params={"minimum_height": 0.1}  # 从0.15降低到0.1
+        params={"minimum_height": 0.12}  # 从0.10增加到0.12
     )
 
-    # 放宽角度限制，允许机器人有更大的倾斜
+    # 适度收紧角度限制，提高稳定性
     bad_orientation = DoneTerm(
         func=mdp.bad_orientation,
-        params={"limit_angle": 1.2}  # 从1.0增加到1.2 (~69度)
+        params={"limit_angle": 1.1}  # 从1.2降低到1.1 (~63度)
     )
 
 
@@ -533,6 +533,43 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
+
+        # G1稳定性修复：使用Mimic配置的初始关节角度和高度
+        if hasattr(self.scene.robot, 'init_state'):
+            # 使用Mimic配置的初始高度0.76m
+            self.scene.robot.init_state.pos = (0.0, 0.0, 0.76)
+            # 使用更合理的初始关节角度（参考Mimic配置）
+            self.scene.robot.init_state.joint_pos = {
+                "left_hip_pitch_joint": -0.312,
+                "right_hip_pitch_joint": -0.312,
+                "left_hip_roll_joint": 0.0,
+                "right_hip_roll_joint": 0.0,
+                "left_hip_yaw_joint": 0.0,
+                "right_hip_yaw_joint": 0.0,
+                "left_knee_joint": 0.669,
+                "right_knee_joint": 0.669,
+                "left_ankle_pitch_joint": -0.363,
+                "right_ankle_pitch_joint": -0.363,
+                "left_ankle_roll_joint": 0.0,
+                "right_ankle_roll_joint": 0.0,
+                "waist_yaw_joint": 0.0,
+                "waist_roll_joint": 0.0,
+                "waist_pitch_joint": 0.0,
+                "left_shoulder_pitch_joint": 0.2,
+                "right_shoulder_pitch_joint": 0.2,
+                "left_shoulder_roll_joint": 0.2,
+                "right_shoulder_roll_joint": -0.2,
+                "left_shoulder_yaw_joint": 0.0,
+                "right_shoulder_yaw_joint": 0.0,
+                "left_elbow_joint": 0.6,
+                "right_elbow_joint": 0.6,
+                "left_wrist_roll_joint": 0.15,
+                "right_wrist_roll_joint": -0.15,
+                "left_wrist_pitch_joint": 0.0,
+                "right_wrist_pitch_joint": 0.0,
+                "left_wrist_yaw_joint": 0.0,
+                "right_wrist_yaw_joint": 0.0,
+            }
 
         # update sensor update periods
         self.scene.contact_forces.update_period = self.sim.dt

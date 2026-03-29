@@ -11,7 +11,13 @@ Reference: https://github.com/unitreerobotics/unitree_ros
 import os
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import DCMotorCfg, IdealPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg, ImplicitActuatorCfg
+
+# Use DelayedPDActuatorCfg as fallback if IdealPDActuatorCfg is not available
+try:
+    from isaaclab.actuators import IdealPDActuatorCfg
+except (ImportError, ModuleNotFoundError):
+    IdealPDActuatorCfg = DelayedPDActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils import configclass
 
@@ -230,6 +236,208 @@ UNITREE_GO2W_CFG = ArticulationCfg(
             stiffness=0.0,
             damping=0.5,
             friction=0.0,
+        ),
+    },
+)
+
+# GO2W with Arm (Piper) - based on robot_lab_locomanip configuration with loco-manipulation
+UNITREE_GO2W_ARM_PIPER_CFG = ArticulationCfg(
+    prim_path="/World/Robot",
+    spawn=sim_utils.UrdfFileCfg(
+        fix_base=False,
+        merge_fixed_joints=True,
+        asset_path=f"{UNITREE_ROS_DIR}/robots/go2w_arm_description/urdf/go2w_piper_description.urdf",
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=1
+        ),
+        joint_drive=None,  # Disable default joint drive, use actuators instead
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.45),  # 提高初始高度到0.45m
+        joint_pos={
+            ".*L_hip_joint": 0.0,      # 髋关节不倾斜
+            ".*R_hip_joint": 0.0,      # 髋关节不倾斜
+            "F.*_thigh_joint": 0.8,
+            "R.*_thigh_joint": 0.8,     # 后腿大腿改为0.8
+            ".*_calf_joint": -1.5,
+            ".*_foot_joint": 0.0,
+            "arm_joint1": 0.0,
+            "arm_joint2": 2.0,          # 预设机械臂姿态 (Piper)
+            "arm_joint3": -1.0,         # 预设机械臂姿态 (Piper)
+            "arm_joint4": 0.0,
+            "arm_joint5": -0.9,         # 预设机械臂姿态 (Piper)
+            "arm_joint6": 0.0,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    actuators={
+        "legs": DelayedPDActuatorCfg(
+            joint_names_expr=["^(?!.*_foot_joint).*"],  # 除轮子外的所有关节
+            min_delay=2,
+            max_delay=5,
+            effort_limit_sim=23.5,
+            velocity_limit_sim=30.0,
+            stiffness=20.0,  # 降低刚度到20.0
+            damping=0.5,
+            friction=0.0,
+        ),
+        "wheels": ImplicitActuatorCfg(
+            joint_names_expr=[".*_foot_joint"],
+            effort_limit_sim=23.5,
+            velocity_limit_sim=30.0,
+            stiffness=0.0,
+            damping=0.5,
+            friction=0.0,
+        ),
+        "arm": DelayedPDActuatorCfg(
+            joint_names_expr=["arm_joint.*"],
+            min_delay=2,
+            max_delay=5,
+            effort_limit_sim={
+                "arm_joint1": 20.0,
+                "arm_joint2": 20.0,
+                "arm_joint3": 20.0,
+                "arm_joint4": 10.0,
+                "arm_joint5": 10.0,
+                "arm_joint6": 10.0,
+            },
+            velocity_limit_sim={
+                "arm_joint1": 10.0,
+                "arm_joint2": 10.0,
+                "arm_joint3": 10.0,
+                "arm_joint4": 20.0,
+                "arm_joint5": 20.0,
+                "arm_joint6": 20.0,
+            },
+            stiffness={
+                "arm_joint1": 10.0,
+                "arm_joint2": 10.0,
+                "arm_joint3": 10.0,
+                "arm_joint4": 10.0,
+                "arm_joint5": 10.0,
+                "arm_joint6": 10.0,
+            },
+            damping={
+                "arm_joint1": 0.5,
+                "arm_joint2": 0.5,
+                "arm_joint3": 0.5,
+                "arm_joint4": 0.5,
+                "arm_joint5": 0.5,
+                "arm_joint6": 0.5,
+            },
+            friction=0.0,
+        ),
+    },
+)
+
+# GO2W with Arm (ARX5) - based on robot_lab_locomanip configuration with loco-manipulation
+UNITREE_GO2W_ARM_ARX5_CFG = ArticulationCfg(
+    prim_path="/World/Robot",
+    spawn=sim_utils.UrdfFileCfg(
+        fix_base=False,
+        merge_fixed_joints=True,
+        asset_path=f"{UNITREE_ROS_DIR}/robots/go2w_arm_description/urdf/go2w_arx5_description.urdf",
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=True, solver_position_iteration_count=4, solver_velocity_iteration_count=1
+        ),
+        joint_drive=None,  # Disable default joint drive, use actuators instead
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.45),  # 提高初始高度到0.45m
+        joint_pos={
+            ".*L_hip_joint": 0.0,      # 髋关节不倾斜
+            ".*R_hip_joint": 0.0,      # 髋关节不倾斜
+            "F.*_thigh_joint": 0.8,
+            "R.*_thigh_joint": 0.8,     # 后腿大腿改为0.8
+            ".*_calf_joint": -1.5,
+            ".*_foot_joint": 0.0,
+            "arm_joint1": 0.0,
+            "arm_joint2": 2.0,          # 预设机械臂姿态 (ARX5)
+            "arm_joint3": 1.0,
+            "arm_joint4": 1.0,
+            "arm_joint5": 0.0,
+            "arm_joint6": 0.0,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    actuators={
+        "legs": DelayedPDActuatorCfg(
+            joint_names_expr=[".*_hip_joint", ".*_thigh_joint", ".*_calf_joint"],  # 明确指定腿部关节
+            min_delay=5,
+            max_delay=10,
+            effort_limit_sim=23.5,
+            velocity_limit_sim=30.0,
+            stiffness=20.0,  # 降低刚度到20.0
+            damping=0.5,
+            friction=0.02,  # 添加小摩擦
+        ),
+        "wheels": ImplicitActuatorCfg(
+            joint_names_expr=[".*_foot_joint"],
+            effort_limit_sim=23.5,
+            velocity_limit_sim=30.0,
+            stiffness=0.0,
+            damping=0.5,
+            friction=0.0,
+        ),
+        "arm": DelayedPDActuatorCfg(
+            joint_names_expr=["arm_joint.*"],
+            min_delay=5,
+            max_delay=10,
+            effort_limit_sim={
+                "arm_joint1": 20.0,
+                "arm_joint2": 20.0,
+                "arm_joint3": 20.0,
+                "arm_joint4": 10.0,
+                "arm_joint5": 10.0,
+                "arm_joint6": 10.0,
+            },
+            velocity_limit_sim={
+                "arm_joint1": 20.0,
+                "arm_joint2": 20.0,
+                "arm_joint3": 20.0,
+                "arm_joint4": 20.0,
+                "arm_joint5": 20.0,
+                "arm_joint6": 20.0,
+            },
+            stiffness={
+                "arm_joint1": 10.0,
+                "arm_joint2": 10.0,
+                "arm_joint3": 10.0,
+                "arm_joint4": 10.0,
+                "arm_joint5": 10.0,
+                "arm_joint6": 10.0,
+            },
+            damping={
+                "arm_joint1": 0.5,
+                "arm_joint2": 0.5,
+                "arm_joint3": 0.5,
+                "arm_joint4": 0.5,
+                "arm_joint5": 0.5,
+                "arm_joint6": 0.5,
+            },
+            friction=0.02,
         ),
     },
 )

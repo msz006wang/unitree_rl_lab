@@ -4,7 +4,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlMLPModelCfg,
+    RslRlPpoAlgorithmCfg,
+)
 
 
 @configclass
@@ -14,11 +18,19 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 500
     experiment_name = ""  # same as task name
     empirical_normalization = False
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+    # 使用新的 actor 和 critic 配置，替换已弃用的 policy 配置
+    # 注意：新版 RSL-RL 不再支持 init_noise_std 和 stochastic 参数
+    # 如果需要随机输出，使用 distribution_cfg 参数
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
         activation="elu",
+        obs_normalization=False,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )
+    critic = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=False,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
