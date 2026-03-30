@@ -338,8 +338,8 @@ class RewardsCfg:
     is_terminated = RewTerm(func=mdp.is_terminated, weight=0.0)
 
     # Root penalties
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.5)  # 降低垂直运动惩罚75%
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.01)  # 降低角度运动限制80%
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
@@ -359,7 +359,7 @@ class RewardsCfg:
         func=mdp.joint_torques_l2, weight=-2.5e-5, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")}
     )
     joint_vel_l2 = RewTerm(func=mdp.joint_vel_l2, weight=0.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
-    joint_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
+    joint_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-7  # 降低加速度惩罚60%, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
 
     # Wheel-specific penalties
     joint_vel_wheel_l2 = RewTerm(
@@ -434,7 +434,7 @@ class RewardsCfg:
     )
 
     # Action penalties
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.001  # 大幅降低动作变化率惩罚99%)
 
     action_mirror = RewTerm(
         func=mdp.action_mirror,
@@ -556,7 +556,7 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces"),
         },
     )
-    upward = RewTerm(func=mdp.upward, weight=1.0)
+    upward = RewTerm(func=mdp.upward, weight=3.0  # 提高向上奖励权重300%)
 
 
 @configclass
@@ -585,6 +585,15 @@ class CurriculumCfg:
             "range_multiplier": (0.1, 1.0),
         },
     )
+    # Arm stability reward (机械臂稳定性奖励)
+    arm_stability = RewTerm(
+        func=mdp.arm_stability,
+        weight=2.0,  # 机械臂稳定性奖励权重
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names="arm_joint.*"),
+            "stability_window": 100,  # 稳定性计算窗口
+        },
+    ),
 
 
 @configclass

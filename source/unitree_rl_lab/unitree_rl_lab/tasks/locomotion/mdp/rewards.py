@@ -628,3 +628,36 @@ def wheel_vel_penalty(
         standing_reward,
     )
     return reward
+
+
+def arm_stability(
+    env: ManagerBasedRLEnv, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names="arm_joint.*"),
+    stability_window: int = 100
+) -> torch.Tensor:
+    """机械臂稳定性奖励
+
+    鼓励机械臂保持稳定姿态，避免干扰腿部运动
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机械臂关节配置
+        stability_window: 稳定性计算窗口
+
+    Returns:
+        机械臂稳定性奖励值
+    """
+    # 获取机械臂关节数据
+    asset: Articulation = env.scene[asset_cfg.name]
+    arm_joints = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    arm_velocities = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    
+    # 计算关节位置方差（越小说明越稳定）
+    joint_variance = torch.var(arm_joints, dim=-1)
+    stability_reward = torch.exp(-joint_variance * 10.0)  # 指数衰减
+    
+    # 考虑运动强度（运动时稳定性应该更好）
+    arm_velocity = torch.linalg.norm(arm_velocities, dim=-1)
+    motion_bonus = torch.clamp(arm_velocity / 5.0, 0.0, 1.0)  # 速度适中时给予奖励
+    
+    return stability_reward * (1.0 + motion_bonus)
