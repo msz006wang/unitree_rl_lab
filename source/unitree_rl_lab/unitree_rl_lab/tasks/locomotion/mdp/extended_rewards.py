@@ -521,6 +521,356 @@ def stable_base_reward(
 
 """
 ==============================
+GO2W ARM 专用Reward函数
+==============================
+"""
+
+
+def upward_velocity(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """
+    向上速度奖励 - 鼓励身体Z轴向上速度，促进快速蹬地起跳
+
+    物理意义：
+    1. 爆发力：鼓励机器人产生向上的爆发力，从地面弹起
+    2. 站立恢复：当机器人从侧卧状态恢复时，向上的速度有助于重新站立
+    3. 动量利用：利用向上动量完成从不倒翁式的恢复动作
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+
+    Returns:
+        向上速度奖励值（正数），向上速度越大奖励越高
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取身体Z轴向上的线速度（在世界坐标系中）
+    upward_velocity = asset.data.root_lin_vel_w[:, 2]
+
+    # 只奖励向上的速度（正数）
+    reward = torch.clamp(upward_velocity, min=0.0)
+
+    return reward
+
+
+def orientation_tracking(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """
+    姿态跟踪奖励 - 奖励身体Z轴与世界坐标系Z轴重合
+
+    物理意义：
+    1. 直立稳定性：鼓励机器人保持直立姿态
+    2. 重心控制：正确的姿态有助于控制重心位置
+    3. 恢复导向：当机器人倾斜时，此奖励引导其恢复到直立状态
+
+    计算方法：
+    使用投影重力的Z分量作为衡量指标：
+    - 完全直立时：projected_gravity_b[:, 2] = 1.0
+    - 完全倒下时：projected_gravity_b[:, 2] = 0.0
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+
+    Returns:
+        姿态跟踪奖励值（0到1之间），越直立奖励越高
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 使用投影重力的Z分量（1.0表示完全直立，0.0表示完全倒下）
+    uprightness = asset.data.projected_gravity_b[:, 2]
+
+    # 归一化到0-1范围
+    reward = torch.clamp(uprightness, 0.0, 1.0)
+
+    return reward
+
+
+def torque_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sustained_window: float = 2.0,
+    burst_threshold: float = 1.5,
+    decay_rate: float = 0.9,
+    rated_torque: float = 23.5,
+) -> torch.Tensor:
+    """
+    扭矩惩罚 - 惩罚持续超出额定扭矩，允许瞬时高扭矩
+
+    物理意义：
+    1. 过热保护：防止电机长时间在高负载下工作导致过热
+    2. 爆发力允许：允许起跳瞬间的爆发扭矩，这是恢复站立所必需的
+    3. 持续性惩罚：只有持续超出额定扭矩才给予惩罚，瞬时峰值是允许的
+
+    实现方法：
+    - 维护每个关节的扭矩历史（指数移动平均）
+    - 只有当持续超出额定扭矩超过指定时间窗口时才惩罚
+    - 使用衰减率控制历史的影响
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        sustained_window: 持续超出时间窗口（秒）
+        burst_threshold: 瞬发扭矩阈值（额定扭矩的倍数）
+        decay_rate: 衰减率（0-1之间，越大历史影响越小）
+        rated_torque: 额定扭矩值
+
+    Returns:
+        扭矩惩罚值（负数），持续超标越大惩罚越大
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取当前扭矩
+    current_torque = torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids])
+
+    # 初始化或更新扭矩历史
+    if not hasattr(env, "torque_history"):
+        env.torque_history = torch.zeros_like(current_torque)
+        env.torque_counter = torch.zeros_like(current_torque)
+
+    # 指数移动平均
+    env.torque_history = decay_rate * env.torque_history + (1 - decay_rate) * current_torque
+
+    # 计算超出持续时间（帧数）
+    is_over_limit = env.torque_history > (rated_torque * burst_threshold)
+    env.torque_counter = torch.where(is_over_limit, env.torque_counter + 1, 0)
+
+    # 计算持续超出时间（秒）
+    sustained_time = env.torque_counter * env.step_dt
+
+    # 只惩罚持续超出时间窗口的情况
+    over_window = sustained_time > sustained_window
+
+    # 惩罚值 = 超出幅度 * 持续时间
+    exceed_amount = env.torque_history - rated_torque
+    penalty = over_window.float() * exceed_amount * sustained_time
+
+    # 求和所有关节的惩罚
+    reward = -torch.sum(penalty, dim=-1)
+
+    return reward
+
+
+def joint_regularization(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    soft_ratio: float = 0.95,
+) -> torch.Tensor:
+    """
+    关节正则化奖励 - 惩罚关节位置接近极值
+
+    物理意义：
+    1. 避免卡死：预留缓冲空间，防止因达到限位导致的"卡死"状态
+    2. 运动灵活性：保持在关节限位内有一定余量，提高运动灵活性
+    3. 安全性：避免在极端位置工作，减少关节磨损
+
+    实现方法：
+    - 计算每个关节距离限位的百分比
+    - 当接近限位时（超过soft_ratio）开始惩罚
+    - 使用指数函数增强接近限位时的惩罚
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        soft_ratio: 软系数（0-1之间），距离极值的百分比阈值
+
+    Returns:
+        关节正则化惩罚值（负数），越接近极值惩罚越大
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取关节位置和限位
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+
+    # 获取关节限位（直接从asset获取，避免缓存问题）
+    joint_limits = asset.data.joint_pos_limits
+    if joint_limits is not None:
+        # joint_limits的形状可能是 (2, num_joints) 或 (num_joints, 2)
+        # 第一种情况：第一行是下限，第二行是上限
+        # 第二种情况：第一列是下限，第二列是上限
+        if joint_limits.shape[0] == 2 and len(joint_limits.shape) == 2:
+            # 形状 (2, num_joints): [lower_limits, upper_limits]
+            # 使用index_select确保正确的维度
+            # 转换asset_cfg.joint_ids为tensor
+            if isinstance(asset_cfg.joint_ids, (list, tuple)):
+                joint_ids_tensor = torch.tensor(asset_cfg.joint_ids, device=env.device, dtype=torch.long)
+            elif hasattr(asset_cfg.joint_ids, '__len__'):
+                joint_ids_tensor = torch.arange(len(asset_cfg.joint_ids), device=env.device, dtype=torch.long)
+            else:
+                joint_ids_tensor = asset_cfg.joint_ids
+            limits_lower = torch.index_select(joint_limits[0], 0, joint_ids_tensor)
+            limits_upper = torch.index_select(joint_limits[1], 0, joint_ids_tensor)
+        else:
+            # 形状 (num_joints, 2): [[lower1, upper1], [lower2, upper2], ...]
+            limits = joint_limits[asset_cfg.joint_ids, :]  # shape: (num_selected_joints, 2)
+            limits_lower = limits[:, 0]
+            limits_upper = limits[:, 1]
+    else:
+        # 默认限位
+        limits_lower = torch.ones(len(asset_cfg.joint_ids), device=env.device) * -1.0
+        limits_upper = torch.ones(len(asset_cfg.joint_ids), device=env.device)
+
+    # 计算每个关节在限位范围内的位置百分比（0表示下限，1表示上限）
+    range_size = limits_upper - limits_lower
+    normalized_pos = (joint_pos - limits_lower) / range_size.unsqueeze(0)
+
+    # 计算距离最近限位的最小距离
+    dist_to_lower = normalized_pos
+    dist_to_upper = 1.0 - normalized_pos
+    min_dist = torch.minimum(dist_to_lower, dist_to_upper)
+
+    # 软限位：只惩罚小于soft_ratio的距离
+    # 例如soft_ratio=0.95表示距离限位小于5%时开始惩罚
+    safe_zone = soft_ratio
+    penalty_zone = torch.clamp(safe_zone - min_dist, min=0.0)
+
+    # 使用指数函数增强惩罚
+    penalty = torch.sum(torch.exp(penalty_zone * 10.0), dim=-1)
+
+    return -penalty
+
+
+def contact_management(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces"),
+    foot_body_names: list = None,
+) -> torch.Tensor:
+    """
+    接触管理奖励 - 奖励非足端部位离开地面
+
+    物理意义：
+    1. 接触简化：鼓励机器人仅通过足端与地面接触，简化控制
+    2. 避免干扰：减少膝盖、机械臂等部位接触地面，避免干扰运动
+    3. 策略引导：引导机器人学习如何正确使用身体部位
+    4. 借力策略：允许轮子和肘部在特定情况下借力
+
+    实现方法：
+    - 监测非足端部位的接触状态
+    - 奖励这些部位离开地面的行为
+    - 根据身体部位的重要性给予不同权重
+
+    Args:
+        env: 强化学习环境
+        sensor_cfg: 接触传感器配置
+        foot_body_names: 足端身体名称列表，这些部位允许接触
+
+    Returns:
+        接触管理奖励值（负数），非期望接触越大惩罚越大
+    """
+    contact_sensor: ContactSensor = env.scene[sensor_cfg.name]
+
+    # 如果没有提供足端名称，使用默认模式
+    if foot_body_names is None:
+        foot_body_names = [".*_foot"]
+
+    # 获取所有接触的身体
+    contact_forces = contact_sensor.data.net_forces_w  # shape: (num_envs, num_bodies, 3)
+    contact_norm = torch.norm(contact_forces, dim=-1)  # shape: (num_envs, num_bodies)
+
+    # 找出足端身体索引
+    foot_body_indices = []
+    for pattern in foot_body_names:
+        indices = contact_sensor.find_bodies([pattern])
+        foot_body_indices.extend(indices[0] if len(indices) > 0 else [])
+
+    # 创建足端掩码
+    foot_mask = torch.zeros(contact_norm.shape[1], device=env.device, dtype=torch.bool)
+    if foot_body_indices:
+        foot_mask[foot_body_indices] = True
+
+    # 非足端部位的接触力
+    non_foot_contacts = torch.where(foot_mask.unsqueeze(0), torch.zeros_like(contact_norm), contact_norm)
+
+    # 只考虑超过阈值的接触（避免噪声）
+    contact_threshold = 1.0  # N
+    significant_contacts = (non_foot_contacts > contact_threshold).float()
+
+    # 惩罚：所有显著的非足端接触的总和
+    penalty = torch.sum(significant_contacts, dim=-1)
+
+    return -penalty
+
+
+def wheel_assisted_recovery(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    wheel_joint_names: list = None,
+) -> torch.Tensor:
+    """
+    轮子辅助恢复奖励 - 鼓励在侧卧时使用轮子辅助改变姿态
+
+    物理意义：
+    1. 轮足协同：利用轮子产生地面摩擦力，辅助改变机身朝向
+    2. 姿态转换：将"侧向推起"转化为"前后撑起"
+    3. 借力策略：轮子转动可以作为额外的支撑点和动力源
+
+    实现方法：
+    - 检测机器人是否处于侧卧状态（倾角较大）
+    - 计算轮子产生的扭矩/速度
+    - 根据机器人倾斜方向和轮子动作的协同性给予奖励
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        wheel_joint_names: 轮子关节名称列表
+
+    Returns:
+        轮子辅助恢复奖励值（正数），轮足协同越好奖励越高
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 如果没有提供轮子名称，使用默认
+    if wheel_joint_names is None:
+        wheel_joint_names = [".*_foot_joint"]
+
+    # 找出轮子关节索引
+    import re
+    wheel_indices = []
+
+    # 获取所有关节名称
+    all_joint_names = asset.data.joint_names
+
+    for pattern in wheel_joint_names:
+        # 使用正则表达式匹配关节名称
+        for idx, joint_name in enumerate(all_joint_names):
+            if re.match(pattern, joint_name):
+                wheel_indices.append(idx)
+
+    # 转换为tensor索引
+    wheel_indices = torch.tensor(wheel_indices, device=env.device, dtype=torch.long)
+
+    # 检测是否处于侧卧状态（倾角超过阈值）
+    # 使用投影重力：侧卧时projected_gravity_b[:, 2] < 0.3
+    tilt_severity = torch.clamp(0.3 - asset.data.projected_gravity_b[:, 2], min=0.0)
+    is_side_lying = tilt_severity > 0.0
+
+    # 获取轮子速度
+    wheel_velocities = torch.abs(asset.data.joint_vel[:, wheel_indices])
+
+    # 计算轮子产生的有效扭矩（假设：速度×刚度）
+    # 这需要知道轮子的刚度，这里简化处理
+    wheel_torques = wheel_velocities * 10.0  # 简化假设
+
+    # 计算角速度（用于判断转向）
+    ang_vel = torch.abs(asset.data.root_ang_vel_b[:, 2])  # yaw角速度
+
+    # 协同性：轮子动作应该有助于改变姿态（产生角速度）
+    # 奖励轮子扭矩和角速度的正相关性
+    synergy = torch.mean(wheel_torques, dim=-1) * ang_vel
+
+    # 只在侧卧时给予奖励
+    reward = synergy * is_side_lying.float() * tilt_severity
+
+    return reward
+
+
+"""
+==============================
 组合Reward函数
 ==============================
 """

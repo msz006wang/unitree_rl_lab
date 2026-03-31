@@ -39,7 +39,7 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=2.0e-4  # 提高学习率接近100%,
+        learning_rate=2.0e-4,  # 提高学习率接近100%
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,

@@ -27,4 +27,22 @@ from .extended_rewards import (  # noqa: F401
     fall_recovery_reward,
     is_fallen,
     upright_orientation_reward,
+    # 新增GO2W ARM专用奖励函数
+    upward_velocity,
+    orientation_tracking,
+    torque_penalty,
+    joint_regularization,
+    contact_management,
+    wheel_assisted_recovery,
+)
+
+# 导出扩展观测函数
+from .observations import (  # noqa: F401
+    joint_pos_rel_without_wheel,
+    gait_phase,
+    phase,
+    # 新增历史观测函数
+    history_buffer,
+    joint_pos_history,
+    body_vel_history,
 )

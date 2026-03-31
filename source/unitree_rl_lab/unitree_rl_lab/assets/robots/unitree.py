@@ -364,7 +364,7 @@ UNITREE_GO2W_ARM_ARX5_CFG = ArticulationCfg(
         joint_drive=None,  # Disable default joint drive, use actuators instead
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.45),  # 提高初始高度到0.45m
+        pos=(0.0, 0.0, 0.42),  # 调整初始高度到0.42m，与训练环境目标高度一致
         joint_pos={
             ".*L_hip_joint": 0.0,      # 髋关节不倾斜
             ".*R_hip_joint": 0.0,      # 髋关节不倾斜
@@ -372,12 +372,15 @@ UNITREE_GO2W_ARM_ARX5_CFG = ArticulationCfg(
             "R.*_thigh_joint": 0.8,     # 后腿大腿改为0.8
             ".*_calf_joint": -1.5,
             ".*_foot_joint": 0.0,
-            "arm_joint1": 0.0,
-            "arm_joint2": 2.0,          # 预设机械臂姿态 (ARX5)
-            "arm_joint3": 1.0,
-            "arm_joint4": 1.0,
-            "arm_joint5": 0.0,
-            "arm_joint6": 0.0,
+            # ✅ 训练全程紧凑机械臂姿态：最低质心、最小转动惯量、零干扰平衡
+            # 机械臂关节限制: arm_joint2[0, 3.66], arm_joint3[0, 3.14]
+            # 设置为最小值（0.0）达到最紧凑状态
+            "arm_joint1": 0.0,          # 腰部旋转：保持中心位置
+            "arm_joint2": 0.0,          # 大臂俯仰：完全收起（最小值）
+            "arm_joint3": 0.0,          # 肘部俯仰：完全折叠（最小值）
+            "arm_joint4": 0.0,          # 前臂旋转：不旋转
+            "arm_joint5": 0.0,          # 手腕俯仰：保持水平
+            "arm_joint6": 0.0,          # 手腕旋转：保持中性
         },
         joint_vel={".*": 0.0},
     ),
@@ -387,7 +390,7 @@ UNITREE_GO2W_ARM_ARX5_CFG = ArticulationCfg(
             joint_names_expr=[".*_hip_joint", ".*_thigh_joint", ".*_calf_joint"],  # 明确指定腿部关节
             min_delay=5,
             max_delay=10,
-            effort_limit_sim=23.5,
+            effort_limit_sim=35.0,  # ✅ 方案B：从23.5提高到35.0 N·m (增加49%)
             velocity_limit_sim=30.0,
             stiffness=20.0,  # 降低刚度到20.0
             damping=0.5,
@@ -395,7 +398,7 @@ UNITREE_GO2W_ARM_ARX5_CFG = ArticulationCfg(
         ),
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=[".*_foot_joint"],
-            effort_limit_sim=23.5,
+            effort_limit_sim=35.0,  # ✅ 方案B：从23.5提高到35.0 N·m
             velocity_limit_sim=30.0,
             stiffness=0.0,
             damping=0.5,
@@ -406,12 +409,12 @@ UNITREE_GO2W_ARM_ARX5_CFG = ArticulationCfg(
             min_delay=5,
             max_delay=10,
             effort_limit_sim={
-                "arm_joint1": 20.0,
-                "arm_joint2": 20.0,
-                "arm_joint3": 20.0,
-                "arm_joint4": 10.0,
-                "arm_joint5": 10.0,
-                "arm_joint6": 10.0,
+                "arm_joint1": 25.0,  # ✅ 方案B：从20.0提高到25.0 N·m (增加25%)
+                "arm_joint2": 25.0,  # ✅ 方案B：从20.0提高到25.0 N·m
+                "arm_joint3": 25.0,  # ✅ 方案B：从20.0提高到25.0 N·m
+                "arm_joint4": 15.0,  # ✅ 方案B：从10.0提高到15.0 N·m (增加50%)
+                "arm_joint5": 15.0,  # ✅ 方案B：从10.0提高到15.0 N·m
+                "arm_joint6": 15.0,  # ✅ 方案B：从10.0提高到15.0 N·m
             },
             velocity_limit_sim={
                 "arm_joint1": 20.0,
