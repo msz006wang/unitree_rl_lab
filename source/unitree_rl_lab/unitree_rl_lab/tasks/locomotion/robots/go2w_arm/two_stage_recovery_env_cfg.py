@@ -2,7 +2,7 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Configuration for GO2W-Arm velocity tracking environment with wheel-legged training parameters."""
+"""Configuration for GO2W-Arm two-stage recovery environment based on robot_lab_locomanip."""
 
 import math
 
@@ -112,7 +112,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base"),
-            "mass_distribution_params": (-0.2, 0.2),  # 减小base质量随机化范围，从±1.0kg到±0.2kg
+            "mass_distribution_params": (-1.0, 3.0),
             "operation": "add",
         },
     )
@@ -122,7 +122,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "mass_distribution_params": (0.85, 1.15),  # 减小其他部件质量随机化范围，从(0.7-1.3)到(0.85-1.15)
+            "mass_distribution_params": (0.7, 1.3),
             "operation": "scale",
             "recompute_inertia": True,
         },
@@ -133,7 +133,7 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "com_range": {"x": (-0.02, 0.02), "y": (-0.02, 0.02), "z": (-0.02, 0.02)},  # 减小重心位置随机化范围，从±0.05m到±0.02m
+            "com_range": {"x": (-0.02, 0.02), "y": (-0.02, 0.02), "z": (-0.02, 0.02)},
         },
     )
 
@@ -148,16 +148,14 @@ class EventCfg:
         },
     )
 
-    # ✅ 禁用关节随机化，确保机械臂全程保持紧凑姿态
-    # randomize_reset_joints = EventTerm(
-    #     func=mdp.reset_joints_by_scale,
-    #     mode="reset",
-    #     params={
-    #         "position_range": (1.0, 1.0),
-    #         "velocity_range": (0.0, 0.0),
-    #     },
-    # )
-    randomize_reset_joints = None  # 禁用此事件，确保机械臂保持紧凑姿态
+    randomize_reset_joints = EventTerm(
+        func=mdp.reset_joints_by_scale,
+        mode="reset",
+        params={
+            "position_range": (1.0, 1.0),
+            "velocity_range": (0.0, 0.0),
+        },
+    )
 
     randomize_actuator_gains = EventTerm(
         func=mdp.randomize_actuator_gains,
@@ -167,7 +165,7 @@ class EventCfg:
             "stiffness_distribution_params": (0.5, 2.0),
             "damping_distribution_params": (0.5, 2.0),
             "operation": "scale",
-            "distribution": "uniform",
+            "distribution": "log_uniform",
         },
     )
 
@@ -176,17 +174,20 @@ class EventCfg:
         mode="reset",
         params={
             "pose_range": {
-                "x": (-0.1, 0.1),  # 减小位置范围，从±0.5m到±0.1m
-                "y": (-0.1, 0.1),  # 减小位置范围，从±0.5m到±0.1m
-                "yaw": (-0.5, 0.5),  # 减小旋转范围，从±π到±0.5 rad (约±28.6°)
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (0.0, 0.2),
+                "roll": (-3.14, 3.14),
+                "pitch": (-3.14, 3.14),
+                "yaw": (-3.14, 3.14),
             },
             "velocity_range": {
-                "x": (-0.1, 0.1),  # 大幅减小初始速度范围
-                "y": (-0.1, 0.1),  # 大幅减小初始速度范围
-                "z": (-0.1, 0.1),  # 大幅减小初始速度范围
-                "roll": (-0.1, 0.1),  # 大幅减小角速度，防止翻倒
-                "pitch": (-0.1, 0.1),  # 大幅减小角速度，防止翻倒
-                "yaw": (-0.1, 0.1),  # 大幅减小角速度
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (-0.5, 0.5),
+                "roll": (-0.5, 0.5),
+                "pitch": (-0.5, 0.5),
+                "yaw": (-0.5, 0.5),
             },
         },
     )
@@ -195,8 +196,8 @@ class EventCfg:
     randomize_push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(15.0, 25.0),  # 增加推机器人间隔，从10-15秒到15-25秒
-        params={"velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)}},  # 减小推力强度，从±0.5到±0.2
+        interval_range_s=(10.0, 15.0),
+        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
 
 
@@ -246,7 +247,6 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
-        # observation terms (order preserved)
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.1, n_max=0.1), clip=(-100.0, 100.0), scale=1.0)
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), clip=(-100.0, 100.0), scale=1.0
@@ -272,19 +272,6 @@ class ObservationsCfg:
             scale=1.0,
         )
         last_action = ObsTerm(func=mdp.last_action, clip=(-100.0, 100.0), scale=1.0)
-        # ✅ 新增：历史观测 - 提供过去10帧的观测数据
-        joint_pos_history = ObsTerm(
-            func=mdp.joint_pos_history,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True), "buffer_length": 10},
-            clip=(-100.0, 100.0),
-            scale=1.0,
-        )
-        body_vel_history = ObsTerm(
-            func=mdp.body_vel_history,
-            params={"buffer_length": 10},
-            clip=(-100.0, 100.0),
-            scale=1.0,
-        )
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
@@ -301,7 +288,6 @@ class ObservationsCfg:
     class CriticCfg(ObsGroup):
         """Observations for critic group."""
 
-        # observation terms (order preserved)
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-100.0, 100.0), scale=1.0)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, clip=(-100.0, 100.0), scale=1.0)
         projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100.0, 100.0), scale=1.0)
@@ -321,19 +307,6 @@ class ObservationsCfg:
             scale=1.0,
         )
         actions = ObsTerm(func=mdp.last_action, clip=(-100.0, 100.0), scale=1.0)
-        # ✅ 新增：历史观测 - 提供过去10帧的观测数据
-        joint_pos_history = ObsTerm(
-            func=mdp.joint_pos_history,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*", preserve_order=True), "buffer_length": 10},
-            clip=(-100.0, 100.0),
-            scale=1.0,
-        )
-        body_vel_history = ObsTerm(
-            func=mdp.body_vel_history,
-            params={"buffer_length": 10},
-            clip=(-100.0, 100.0),
-            scale=1.0,
-        )
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
@@ -352,22 +325,22 @@ class ObservationsCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for the MDP."""
+    """Reward terms for the MDP - Based on robot_lab_locomanip configuration."""
 
     # General
     is_terminated = RewTerm(func=mdp.is_terminated, weight=0.0)
 
     # Root penalties
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.5)  # 降低垂直运动惩罚75%
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.01)  # 降低角度运动限制80%
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=3.0)  # 激活：保持直立姿态奖励
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=0.0)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
-        weight=2.0,  # 激活：保持目标高度奖励
+        weight=-5.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base"),
             "sensor_cfg": SceneEntityCfg("height_scanner_base"),
-            "target_height": 0.45,  # 调整目标高度以匹配新的初始高度
+            "target_height": 0.40,
         },
     )
     body_lin_acc_l2 = RewTerm(
@@ -376,14 +349,10 @@ class RewardsCfg:
 
     # Joint penalties
     joint_torques_l2 = RewTerm(
-        func=mdp.joint_torques_l2, weight=-2.5e-5, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")}
+        func=mdp.torque_adaptive, weight=-2.5e-5, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*"), "full_penalty_weight": -2.5e-5, "reduced_penalty_weight": -2.5e-6, "orientation_threshold": 0.5}
     )
     joint_vel_l2 = RewTerm(func=mdp.joint_vel_l2, weight=0.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
-    joint_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-7,  # 降低加速度惩罚60%
-                           params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
-
-    # ✅ 移除参考项目中不存在的奖励项，保持配置简洁
-
+    joint_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
     joint_pos_limits = RewTerm(
         func=mdp.joint_pos_limits, weight=-5.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")}
     )
@@ -397,31 +366,12 @@ class RewardsCfg:
         weight=-2e-5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")},
     )
-    stand_still = RewTerm(
-        func=mdp.stand_still,
-        weight=-2.0,
-        params={
-            "command_name": "base_velocity",
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-        },
-    )
-    joint_pos_penalty = RewTerm(
-        func=mdp.joint_pos_penalty,
-        weight=-1.0,
-        params={
-            "command_name": "base_velocity",
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "stand_still_scale": 5.0,
-            "velocity_threshold": 0.5,
-            "command_threshold": 0.1,
-        },
-    )
     wheel_vel_penalty = RewTerm(
         func=mdp.wheel_vel_penalty,
         weight=0.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=""),
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=""),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),  # 匹配轮子
             "command_name": "base_velocity",
             "velocity_threshold": 0.5,
             "command_threshold": 0.1,
@@ -429,7 +379,7 @@ class RewardsCfg:
     )
     joint_mirror = RewTerm(
         func=mdp.joint_mirror,
-        weight=-0.05,
+        weight=0.0,
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "mirror_joints": [
@@ -440,7 +390,7 @@ class RewardsCfg:
     )
 
     # Action penalties
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.001)  # 大幅降低动作变化率惩罚99%
+    action_rate_l2 = RewTerm(func=mdp.action_rate_adaptive, weight=-0.01, params={"asset_cfg": SceneEntityCfg("robot"), "full_penalty_weight": -0.01, "reduced_penalty_weight": -0.001, "orientation_threshold": 0.5})
 
     action_mirror = RewTerm(
         func=mdp.action_mirror,
@@ -468,9 +418,9 @@ class RewardsCfg:
 
     # Contact sensor
     undesired_contacts = RewTerm(
-        func=mdp.undesired_contacts,
+        func=mdp.contact_adaptive,
         weight=-1.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=""), "threshold": 1.0},
+        params={"asset_cfg": SceneEntityCfg("robot"), "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["^(?!.*foot).*$"]), "full_penalty_weight": -1.0, "reduced_penalty_weight": -0.1, "orientation_threshold": 0.5},
     )
     contact_forces = RewTerm(
         func=mdp.contact_forces,
@@ -478,14 +428,16 @@ class RewardsCfg:
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"), "threshold": 100.0},
     )
 
-    # ✅ 移除参考项目中不存在的奖励项，保持配置简洁
-    # Velocity-tracking rewards（保持现有）
+    # Velocity-tracking rewards
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_lin_vel_xy_exp, weight=3.0, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=1.0, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_ang_vel_z_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
+
+    # Note: 3D velocity tracking rewards (track_lin_vel_xyz_exp, track_ang_vel_xyz_exp) are not available in current isaaclab version
+    # and are commented out in robot_lab_locomanip reference project as well
 
     # Others
     feet_air_time = RewTerm(
@@ -496,25 +448,6 @@ class RewardsCfg:
             "threshold": 0.5,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
         },
-    )
-    feet_contact = RewTerm(
-        func=mdp.feet_contact,
-        weight=0.0,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
-            "command_name": "base_velocity",
-            "expect_contact_num": 2,
-        },
-    )
-    feet_contact_without_cmd = RewTerm(
-        func=mdp.feet_contact_without_cmd,
-        weight=0.1,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"), "command_name": "base_velocity"},
-    )
-    feet_stumble = RewTerm(
-        func=mdp.feet_stumble,
-        weight=0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")},
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
@@ -544,99 +477,35 @@ class RewardsCfg:
             "command_name": "base_velocity",
         },
     )
-    upward = RewTerm(func=mdp.upward, weight=3.0)  # 提高向上奖励权重300%
+    upward = RewTerm(func=mdp.upward_orientation, weight=5.0)  # 基于姿态的向上奖励，权重+5.0
 
-    # ✅ 新增：Upward Velocity奖励 - 鼓励Z轴向上速度，促进快速蹬地起跳
-    upward_velocity = RewTerm(
-        func=mdp.upward_velocity,
-        weight=2.0,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names="base")},
-    )
-
-    # ✅ 新增：Orientation Tracking奖励 - 身体Z轴与世界坐标系Z轴重合度奖励
-    orientation_tracking = RewTerm(
-        func=mdp.orientation_tracking,
-        weight=1.5,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names="base")},
-    )
-
-    # ✅ 新增：Torque Penalty奖励 - 惩罚持续超出额定扭矩，允许瞬时爆发力
-    torque_penalty = RewTerm(
-        func=mdp.torque_penalty,
-        weight=-0.01,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "sustained_window": 2.0,  # 持续超出时间窗口（秒）
-            "burst_threshold": 1.5,  # 瞬发扭矩阈值（额定扭矩的倍数）
-            "decay_rate": 0.9,  # 衰减率
-            "rated_torque": 23.5,  # 额定扭矩
-        },
-    )
-
-    # ✅ 新增：Joint Regularization奖励 - 惩罚关节位置接近极值（暂时禁用）
-    # joint_regularization = RewTerm(
-    #     func=mdp.joint_regularization,
-    #     weight=-0.5,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-    #         "soft_ratio": 0.95,  # 软系数
-    #     },
-    # )
-
-    # ✅ 新增：Joint Contact奖励 - 奖励非足端部位（膝盖、机械臂等）与地面接触
-    joint_contact_reward = RewTerm(
-        func=mdp.joint_contact_reward,
-        weight=0.3,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces"),
-            "reward_threshold": 0.5,  # 力阈值0.5 N
-        },
-    )
-
-    # Arm stability reward (机械臂稳定性奖励)
-    arm_stability = RewTerm(
-        func=mdp.arm_stability,
-        weight=2.0,  # 机械臂稳定性奖励权重
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names="arm_joint.*"),
-            "stability_window": 100,  # 稳定性计算窗口
-        },
-    )
-
-    # Foot contact rewards (足端接触奖励)
-    feet_contact = RewTerm(
-        func=mdp.feet_contact_reward,
-        weight=0.5,  # 足端接触奖励权重
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
-            "threshold": 5.0,  # 接触力阈值
-        },
-    )
-
-    # ✅ 新增：Contact Management奖励 - 奖励非足端部位离开地面
-    contact_management = RewTerm(
-        func=mdp.contact_management,
-        weight=-0.3,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces"),
-            "foot_body_names": [".*_foot"],
-        },
-    )
-
-    # ✅ 新增：Wheel Assisted Recovery奖励 - 轮足协同，侧卧时利用轮子辅助
-    wheel_assisted_recovery = RewTerm(
-        func=mdp.wheel_assisted_recovery,
-        weight=0.5,
+    # Two-stage recovery specific: Wheel angular momentum reward
+    # 鼓励悬空轮子急加速，利用角动量守恒产生翻滚扭矩
+    wheel_angular_momentum = RewTerm(
+        func=mdp.wheel_angular_momentum_reward,
+        weight=2.0,  # 较高的权重，鼓励利用角动量进行恢复
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "wheel_joint_names": [".*_foot_joint"],
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),  # 匹配所有轮子（foot）
+            "wheel_joint_names": ["FR_foot_joint", "FL_foot_joint", "RR_foot_joint", "RL_foot_joint"],
+            "weight": 1.0,
+            "contact_threshold": 1.0,  # 接触力小于1.0N认为轮子悬空
         },
     )
+
+    # Two-stage recovery specific rewards (disabled - robot_lab_locomanip doesn't use standing rewards)
+    # two_stage_standing_reward = RewTerm(
+    #     func=mdp.two_stage_standing_reward,
+    #     weight=0.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces"),
+    #     },
+    # )
 
 
 @configclass
 class TerminationsCfg:
-    """Termination terms for the MDP."""
+    """Termination terms for MDP."""
 
     # MDP terminations
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
@@ -644,13 +513,13 @@ class TerminationsCfg:
     # Contact sensor
     illegal_contact = DoneTerm(
         func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=""), "threshold": 1.0},
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["^(?!.*foot).*$"]), "threshold": 1.0},
     )
 
 
 @configclass
 class CurriculumCfg:
-    """Curriculum terms for the MDP."""
+    """Curriculum terms for MDP."""
 
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
     command_levels = CurrTerm(
@@ -663,8 +532,8 @@ class CurriculumCfg:
 
 
 @configclass
-class RobotEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the locomotion velocity-tracking environment."""
+class TwoStageRecoveryEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for GO2W-Arm two-stage recovery environment based on robot_lab_locomanip."""
 
     # Scene settings
     scene: RobotSceneCfg = RobotSceneCfg(num_envs=4096, env_spacing=2.5)
@@ -700,7 +569,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
     # fmt: on
 
     def __post_init__(self):
-        """Post initialization."""
+        """Post initialization - Based on robot_lab_locomanip configuration."""
         # general settings
         self.decimation = 4
         self.episode_length_s = 20.0
@@ -711,14 +580,12 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
 
         # update sensor update periods
-        # we tick all the sensors based on the smallest update period (physics update period)
         if self.scene.height_scanner is not None:
             self.scene.height_scanner.update_period = self.decimation * self.sim.dt
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
 
-        # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
-        # this generates terrains with increasing difficulty and is useful for training
+        # check if terrain levels curriculum is enabled
         if getattr(self.curriculum, "terrain_levels", None) is not None:
             if self.scene.terrain.terrain_generator is not None:
                 self.scene.terrain.terrain_generator.curriculum = True
@@ -753,48 +620,44 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.observations.policy.height_scan = None
         # Update joint observations for specific joint groups
         self.observations.policy.joint_pos.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
-        self.observations.policy.joint_vel.params["asset_cfg"].joint_names = self.wheel_joint_names
+        self.observations.policy.joint_vel.params["asset_cfg"].joint_names = self.joint_names
 
         # ------------------------------Actions------------------------------
-        # ✅ 新策略：机械臂夹紧状态，允许根部旋转辅助恢复
-        # 机械臂保持折叠姿态（arm_joint2-6固定），但允许arm_joint1（腰部旋转）调整
-        # 这样可以在保持夹紧的同时，通过腰部旋转辅助改变重心和姿态
-
         # Set action scale for different joint groups
+        # 针对 Two-Stage Recovery 恢复训练，增大 arm_joint1 的缩放因子至 0.5
+        # 使策略能够通过快速甩动大质量机械臂，产生足以打破侧卧静态平衡的惯性力矩
         self.actions.joint_pos.scale = {
             ".*_hip_joint": 0.125,
-            "arm_joint1": 0.1,  # 机械臂根部旋转较小范围，避免剧烈摆动
-            "^(?!.*_hip_joint)(?!arm_joint1).*": 0.25,  # 其他关节正常范围
+            "arm_joint1": 0.5,  # 增大至 0.5，允许快速甩动产生惯性力矩
+            "^(?!.*_hip_joint)(?!arm_joint1).*": 0.25,
         }
         self.actions.joint_vel.scale = 5.0
         self.actions.joint_pos.clip = {".*": (-100.0, 100.0)}
         self.actions.joint_vel.clip = {".*": (-100.0, 100.0)}
 
-        # ✅ 关键修改：腿部+机械臂根部关节在动作空间，其他机械臂关节保持固定
-        # 机械臂策略：全程夹紧（arm_joint2-6固定），允许根部旋转（arm_joint1）辅助平衡
-        self.actions.joint_pos.joint_names = self.leg_joint_names + ["arm_joint1"]  # 腿部+机械臂根部
+        # Leg + all arm joints in action space - enable dynamic arm swinging
+        self.actions.joint_pos.joint_names = self.leg_joint_names + self.arm_joint_names
         self.actions.joint_vel.joint_names = self.wheel_joint_names
 
         # ------------------------------Events------------------------------
         # Update event parameters for base link
-        # 优化：大幅降低初始随机化强度，让机器人从接近站立的状态开始
-        # 原因：从完全翻倒状态（±180°）和高角速度开始，机器人难以恢复站立
+        # 探索期：大幅放开 roll 范围至 ±1.6 rad (±90°) 以训练两段式恢复能力
         self.events.randomize_reset_base.params = {
             "pose_range": {
-                "x": (-0.2, 0.2),      # 减小水平位移范围，从±0.5m到±0.2m
-                "y": (-0.2, 0.2),      # 减小水平位移范围，从±0.5m到±0.2m
-                "z": (0.35, 0.5),      # 提高初始高度范围，从(0.0, 0.2)到(0.35, 0.5)m，接近站立高度
-                "roll": (-0.3, 0.3),   # 大幅减小翻滚角，从±π(±180°)到±0.3rad(±17°)
-                "pitch": (-0.3, 0.3),  # 大幅减小俯仰角，从±π(±180°)到±0.3rad(±17°)
-                "yaw": (-3.14, 3.14),  # 保持航向角完全随机（±180°）
+                "x": (-0.2, 0.2),
+                "y": (-0.2, 0.2),
+                "z": (0.35, 0.5),
+                "roll": (-1.6, 1.6),  # ±90°，大幅放开以训练侧倾恢复能力
+                "pitch": (-0.3, 0.3),
+                "yaw": (-3.14, 3.14),
             },
             "velocity_range": {
-                "x": (-0.1, 0.1),     # 大幅减小初始速度，从±0.5到±0.1
-                "y": (-0.1, 0.1),     # 大幅减小初始速度，从±0.5到±0.1
-                "z": (-0.05, 0.05),   # 大幅减小垂直速度，从±0.5到±0.05
-                "roll": (-0.1, 0.1),   # 大幅减小角速度，从±0.5到±0.1
-                "pitch": (-0.1, 0.1),  # 大幅减小角速度，从±0.5到±0.1
-                "yaw": (-0.1, 0.1),    # 大幅减小角速度，从±0.5到±0.1
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.05, 0.05),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.1, 0.1),
             },
         }
         self.events.randomize_rigid_body_mass_base.params["asset_cfg"].body_names = [self.base_link_name]
@@ -805,68 +668,61 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
 
         # ------------------------------Rewards------------------------------
-        # ✅ 根据参考项目robot_lab_locomanip重新配置reward参数
+        # Based on robot_lab_locomanip configuration
         # General
         self.rewards.is_terminated.weight = 0
 
-        # Root penalties（参考项目配置）
+        # Root penalties
         self.rewards.lin_vel_z_l2.weight = -2.0
-        self.rewards.ang_vel_xy_l2.weight = 0.0  # 参考项目为0.0
-        self.rewards.flat_orientation_l2.weight = 0.0  # 参考项目为0.0
-        self.rewards.base_height_l2.weight = -5.0  # 参考项目为-5.0，目标高度0.40m
-        self.rewards.base_height_l2.params["target_height"] = 0.40  # 参考项目目标高度
+        self.rewards.ang_vel_xy_l2.weight = 0.0
+        self.rewards.flat_orientation_l2.weight = 0.0
+        self.rewards.base_height_l2.weight = -5.0
+        self.rewards.base_height_l2.params["target_height"] = 0.40
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
         self.rewards.body_lin_acc_l2.params["asset_cfg"].body_names = [self.base_link_name]
 
-        # Joint penalties（参考项目配置）
+        # Joint penalties - 使用自适应惩罚，允许倒地时产生大扭矩
         self.rewards.joint_torques_l2.weight = -2.5e-5
         self.rewards.joint_torques_l2.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
-        # ✅ 移除不存在的joint_torques_wheel_l2相关配置
-
+        self.rewards.joint_torques_l2.params["full_penalty_weight"] = -2.5e-5
+        self.rewards.joint_torques_l2.params["reduced_penalty_weight"] = -2.5e-6  # 倒地时降低10倍
+        self.rewards.joint_torques_l2.params["orientation_threshold"] = 0.5  # Z<0.5时降低惩罚
         self.rewards.joint_pos_limits.weight = -5.0
         self.rewards.joint_pos_limits.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
         self.rewards.joint_vel_limits.weight = 0
         self.rewards.joint_vel_limits.params["asset_cfg"].joint_names = self.wheel_joint_names
         self.rewards.joint_power.weight = -2.0e-5
         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
-        self.rewards.stand_still.weight = 0
-        self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
-        self.rewards.joint_pos_penalty.weight = 0
-        self.rewards.joint_pos_penalty.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
-        # ✅ 移除对不存在的wheel_vel_penalty的引用（原始RewardsCfg中不存在）
         self.rewards.joint_mirror.weight = 0
         self.rewards.joint_mirror.params["mirror_joints"] = [
             ["FR_(hip|thigh|calf).*", "RL_(hip|thigh|calf).*"],
             ["FL_(hip|thigh|calf).*", "RR_(hip|thigh|calf).*"],
         ]
 
-        # Action penalties（参考项目配置）
+        # Action penalties - 使用自适应惩罚，允许倒地时疯狂探索
         self.rewards.action_rate_l2.weight = -0.01
+        self.rewards.action_rate_l2.params["full_penalty_weight"] = -0.01
+        self.rewards.action_rate_l2.params["reduced_penalty_weight"] = -0.001  # 倒地时降低10倍
+        self.rewards.action_rate_l2.params["orientation_threshold"] = 0.5  # Z<0.5时降低惩罚
 
-        # Contact sensor（参考项目配置）
+        # Contact sensor - 使用自适应惩罚，允许倒地时借力
         self.rewards.undesired_contacts.weight = -1.0
         self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [f"^(?!.*{self.foot_link_name}).*"]
+        self.rewards.undesired_contacts.params["full_penalty_weight"] = -1.0
+        self.rewards.undesired_contacts.params["reduced_penalty_weight"] = -0.1  # 倒地时降低10倍
+        self.rewards.undesired_contacts.params["orientation_threshold"] = 0.5  # Z<0.5时降低惩罚
         self.rewards.contact_forces.weight = -1.5e-4
         self.rewards.contact_forces.params["sensor_cfg"].body_names = [self.foot_link_name]
 
-        # Velocity-tracking rewards（参考项目配置）
+        # Velocity-tracking rewards
         self.rewards.track_lin_vel_xy_exp.weight = 3.0
         self.rewards.track_ang_vel_z_exp.weight = 1.5
 
-        # ✅ 新增的奖励函数已经在RewardsCfg类中定义（lines 580-620）
-        # 这里不需要重复定义，直接使用即可
-
-        # Others（参考项目配置）
+        # Others
         self.rewards.feet_air_time.weight = 0
         self.rewards.feet_air_time.params["threshold"] = 0.5
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_contact.weight = 0
-        self.rewards.feet_contact.params["sensor_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_contact_without_cmd.weight = 0.1
-        self.rewards.feet_contact_without_cmd.params["sensor_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_stumble.weight = 0
-        self.rewards.feet_stumble.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_slide.weight = 0
         self.rewards.feet_slide.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.feet_slide.params["asset_cfg"].body_names = [self.foot_link_name]
@@ -876,7 +732,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.feet_height_body.weight = 0
         self.rewards.feet_height_body.params["target_height"] = -0.2
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.upward.weight = 0  # 参考项目为0
+        self.rewards.upward.weight = 5.0  # 基于姿态的向上奖励，权重+5.0，高权重促进恢复
 
         # ------------------------------Terminations------------------------------
         # Disable illegal contact termination
@@ -890,10 +746,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.disable_zero_weight_rewards()
 
     def disable_zero_weight_rewards(self):
-        """Disable rewards with zero weight to optimize computation.
-
-        This method sets reward terms with weight=0 to None, avoiding unnecessary calculations.
-        """
+        """Disable rewards with zero weight to optimize computation."""
         for attr in dir(self.rewards):
             if not attr.startswith("__"):
                 reward_attr = getattr(self.rewards, attr)
@@ -902,7 +755,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 
 
 @configclass
-class RobotPlayEnvCfg(RobotEnvCfg):
+class TwoStageRecoveryPlayEnvCfg(TwoStageRecoveryEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
@@ -910,60 +763,48 @@ class RobotPlayEnvCfg(RobotEnvCfg):
             self.scene.terrain.terrain_generator.num_rows = 2
             self.scene.terrain.terrain_generator.num_cols = 1
         self.commands.base_velocity.ranges = self.commands.base_velocity.ranges.__class__(
-            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
+            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
         )
 
 
 @configclass
-class RobotFlatEnvCfg(RobotEnvCfg):
-    """平地训练配置 - 基于GO2W项目设计
-
-    关键修改：
-    1. 地形类型改为平面 (plane)
-    2. 移除地形生成器
-    3. 禁用高度扫描
-    4. 禁用地形课程学习
-
-    适用场景：
-    - 初期训练
-    - 快速原型验证
-    - 调试和测试
-    """
+class TwoStageRecoveryFlatEnvCfg(TwoStageRecoveryEnvCfg):
+    """Flat terrain training configuration for two-stage recovery."""
 
     def __post_init__(self):
-        # 首先执行父类的初始化
+        # Execute parent class initialization first
         super().__post_init__()
 
-        # ==================== 地形设置（关键修改）====================
-        # 修改地形类型为平面
+        # ==================== Terrain Settings ====================
+        # Change terrain type to plane
         self.scene.terrain.terrain_type = "plane"
-        # 移除地形生成器
+        # Remove terrain generator
         self.scene.terrain.terrain_generator = None
 
-        # ==================== 传感器设置 ====================
-        # 禁用高度扫描器（平地不需要）
+        # ==================== Sensor Settings ====================
+        # Disable height scanners (not needed for flat terrain)
         self.scene.height_scanner = None
         self.scene.height_scanner_base = None
 
-        # ==================== 观测空间 ====================
-        # 显式禁用高度扫描观测
+        # ==================== Observations ====================
+        # Explicitly disable height scan observations
         self.observations.policy.height_scan = None
         self.observations.critic.height_scan = None
 
-        # ==================== 奖励函数 ====================
-        # 平地不需要基于高度扫描的奖励
+        # ==================== Rewards ====================
+        # Flat terrain doesn't need height scan based rewards
         if hasattr(self.rewards, 'base_height_l2') and self.rewards.base_height_l2 is not None:
             self.rewards.base_height_l2.params["sensor_cfg"] = None
 
-        # ==================== 课程学习 ====================
-        # 禁用地形难度课程学习（平地无地形）
+        # ==================== Curriculum ====================
+        # Disable terrain difficulty curriculum (no terrain on flat ground)
         self.curriculum.terrain_levels = None
 
-        # ==================== 重新禁用零权重奖励 ====================
+        # ==================== Re-disable zero-weight rewards ====================
         self.disable_zero_weight_rewards()
 
-        print("✅ 使用GO2W-Arm(ARX5)平地训练配置 (RobotFlatEnvCfg)")
-        print(f"   - 地形类型: {self.scene.terrain.terrain_type}")
-        print(f"   - 地形生成器: {self.scene.terrain.terrain_generator}")
-        print(f"   - 高度扫描: {self.scene.height_scanner}")
-        print(f"   - 地形课程: {self.curriculum.terrain_levels}")
+        print("✅ Using GO2W-Arm Two-Stage Recovery flat terrain configuration (TwoStageRecoveryFlatEnvCfg)")
+        print(f"   - Terrain type: {self.scene.terrain.terrain_type}")
+        print(f"   - Terrain generator: {self.scene.terrain.terrain_generator}")
+        print(f"   - Height scanner: {self.scene.height_scanner}")
+        print(f"   - Terrain curriculum: {self.curriculum.terrain_levels}")

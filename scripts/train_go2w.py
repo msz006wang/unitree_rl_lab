@@ -33,24 +33,15 @@ os.chdir(PROJECT_ROOT)
 
 import gymnasium as gym
 import torch
-from isaaclab.app import AppLauncher
 
-# Import tasks
-import unitree_rl_lab.tasks  # noqa: F401
+# CRITICAL: Parse arguments FIRST to avoid conflicts with AppLauncher args
+# We need to parse arguments BEFORE importing isaaclab modules and BEFORE AppLauncher instantiation
 
-# Configure torch optimizations
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.benchmark = False
-
-
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Train GO2W wheel-legged robot on Flat or Rough terrain",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+# Create parser and add AppLauncher arguments
+parser = argparse.ArgumentParser(
+    description="Train GO2W wheel-legged robot on Flat or Rough terrain",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog="""
 Examples:
   # Train on flat terrain with default settings
   python train_go2w.py --mode flat
@@ -69,70 +60,99 @@ Examples:
 
   # Train with GUI visualization
   python train_go2w.py --mode flat --gui
+
+  # Train with custom task name
+  python train_go2w.py --task Unitree-Go2W-Velocity-Flat-v0
         """
-    )
+)
 
-    # Mode selection
-    parser.add_argument(
-        "--mode",
-        type=str,
-        required=True,
-        choices=["flat", "rough", "play-flat", "play-rough"],
-        help="Training mode: flat (plane terrain), rough (generated terrain), or play mode"
-    )
+# Task selection (alternative to mode)
+parser.add_argument(
+    "--task",
+    type=str,
+    default=None,
+    help="Direct task name (overrides --mode if provided)"
+)
 
-    # Environment parameters
-    parser.add_argument("--num_envs", type=int, default=4096, help="Number of parallel environments")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+# Mode selection
+parser.add_argument(
+    "--mode",
+    type=str,
+    default=None,
+    choices=["flat", "rough", "play-flat", "play-rough"],
+    help="Training mode: flat (plane terrain), rough (generated terrain), or play mode"
+)
 
-    # Training parameters
-    parser.add_argument("--max_iterations", type=int, default=10000, help="Maximum training iterations")
-    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
-    parser.add_argument("--load_run", type=str, default=None, help="Run name to load from (default: recent)")
-    parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint name to load")
+# Environment parameters
+parser.add_argument("--num_envs", type=int, default=4096, help="Number of parallel environments")
+parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
-    # Visualization
-    parser.add_argument("--headless", action="store_true", default=True, help="Run without GUI")
-    parser.add_argument("--gui", action="store_true", help="Enable GUI visualization")
-    parser.add_argument("--video", action="store_true", help="Record videos during training")
-    parser.add_argument("--video_interval", type=int, default=2000, help="Video recording interval (steps)")
-    parser.add_argument("--video_length", type=int, default=200, help="Length of recorded videos (steps)")
+# Training parameters
+parser.add_argument("--max_iterations", type=int, default=10000, help="Maximum training iterations")
+parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
+parser.add_argument("--load_run", type=str, default=None, help="Run name to load from (default: recent)")
+parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint name to load")
 
-    # Device
-    parser.add_argument("--device", type=str, default="cuda:0", help="Device to use for training")
+# Visualization
+parser.add_argument("--headless", action="store_true", default=True, help="Run without GUI")
+parser.add_argument("--gui", action="store_true", help="Enable GUI visualization")
+parser.add_argument("--video", action="store_true", help="Record videos during training")
+parser.add_argument("--video_interval", type=int, default=2000, help="Video recording interval (steps)")
+parser.add_argument("--video_length", type=int, default=200, help="Length of recorded videos (steps)")
 
-    # Multi-GPU
-    parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
+# Device
+parser.add_argument("--device", type=str, default="cuda:0", help="Device to use for training")
 
-    # AppLauncher arguments
-    AppLauncher.add_app_launcher_args(parser)
+# Multi-GPU
+parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
 
-    args = parser.parse_args()
+# Add AppLauncher arguments
+from isaaclab.app import AppLauncher
+AppLauncher.add_app_launcher_args(parser)
 
-    # Handle GUI vs headless
-    if args.gui:
-        args.headless = False
+# Parse command line arguments
+args = parser.parse_args()
 
-    return args
+# Handle GUI vs headless
+if args.gui:
+    args.headless = False
+
+# Now that we have parsed arguments, launch Isaac Sim app
+app_launcher = AppLauncher(args)
+simulation_app = app_launcher.app
+
+# Import tasks AFTER SimulationApp is instantiated
+import unitree_rl_lab.tasks  # noqa: F401
+
+# Configure torch optimizations
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = False
 
 
 def main():
     """Main training function."""
-    args = parse_args()
 
-    # Determine task and configuration based on mode
-    mode_map = {
-        "flat": ("Unitree-Go2W-Velocity-Flat-v0", "Training on FLAT terrain"),
-        "rough": ("Unitree-Go2W-Velocity-Rough-v0", "Training on ROUGH terrain"),
-        "play-flat": ("Unitree-Go2W-Velocity-Flat-v0", "Playing on FLAT terrain"),
-        "play-rough": ("Unitree-Go2W-Velocity-Rough-v0", "Playing on ROUGH terrain"),
-    }
+    # Determine task and configuration based on mode or task parameter
+    if args.task:
+        # Use direct task name
+        task_name = args.task
+        description = f"Training with custom task: {task_name}"
+    else:
+        # Use mode-based task selection
+        mode_map = {
+            "flat": ("Unitree-Go2W-Velocity-Flat-v0", "Training on FLAT terrain"),
+            "rough": ("Unitree-Go2W-Velocity-Rough-v0", "Training on ROUGH terrain"),
+            "play-flat": ("Unitree-Go2W-Velocity-Flat-v0", "Playing on FLAT terrain"),
+            "play-rough": ("Unitree-Go2W-Velocity-Rough-v0", "Playing on ROUGH terrain"),
+        }
 
-    if args.mode not in mode_map:
-        print(f"Error: Unknown mode '{args.mode}'")
-        sys.exit(1)
+        if args.mode not in mode_map:
+            print(f"Error: Unknown mode '{args.mode}'")
+            sys.exit(1)
 
-    task_name, description = mode_map[args.mode]
+        task_name, description = mode_map[args.mode]
 
     # Print configuration
     print("=" * 60)
@@ -150,12 +170,9 @@ def main():
     print("=" * 60)
     print()
 
-    # Launch Isaac Sim
-    app_launcher = AppLauncher(args)
-    simulation_app = app_launcher.app
+    # Note: SimulationApp already instantiated at module level for correct omni module loading
 
     try:
-        import logging
         import time
         from rsl_rl.runners import OnPolicyRunner
 
@@ -168,14 +185,12 @@ def main():
         # Import CLI args
         sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "rsl_rl"))
         import cli_args
+        sys.path.pop(0)
 
         # Import local utilities
         sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
         from list_envs import import_packages  # noqa: F401
         sys.path.pop(0)
-
-        # Setup logging
-        logger = logging.getLogger(__name__)
 
         # Clear sys.argv for Hydra
         sys.argv = [sys.argv[0]]

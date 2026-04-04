@@ -1,0 +1,59 @@
+# Minimal Requirements for GO2W RL Training with Isaac Sim
+# Core dependencies only - for training and running in Isaac Sim environment
+
+# ============================================================================
+# Essential Training Dependencies
+# ============================================================================
+# PyTorch - Deep Learning Framework
+torch>=2.0.0
+
+# Gymnasium - Reinforcement Learning Environment API
+gymnasium>=0.29.0
+
+# ============================================================================
+# Isaac Sim Dependencies (automatically installed)
+# ============================================================================
+# Note: When running Isaac Sim 5.1.0 Python environment,
+# these packages are already available and don't need separate installation.
+# isaaclab>=0.54.3
+# isaaclab_assets>=0.2.4
+# isaaclab_tasks>=0.11.14
+# isaaclab_rl>=0.5.0
+
+# ============================================================================
+# RSL-RL Dependencies (automatically installed)
+# ============================================================================
+# Note: RSL-RL is included with Isaac Sim installation
+# rsl-rl>=0.4.0
+
+# ============================================================================
+# System Utilities
+# ============================================================================
+# System monitoring and process management
+psutil>=5.9.0
+
+# Command-line argument completion (optional)
+argcomplete>=3.0.0
+
+# ============================================================================
+# Python Version
+# ============================================================================
+python>=3.10
+
+# ============================================================================
+# Installation
+# ============================================================================
+#
+# Basic installation:
+# pip install -r requirements-minimal.txt
+#
+# Isaac Sim environment:
+# Most dependencies are pre-installed in Isaac Sim Python environment.
+# Just activate the environment:
+#   source /home/jay/miniconda3/etc/profile.d/conda.sh
+#   conda activate env_isaaclab
+#
+# Note: PyTorch and Isaac Lab packages should be automatically available.
+# If you encounter import errors, ensure SimulationApp is instantiated
+# before importing any Isaac Lab modules.
+#

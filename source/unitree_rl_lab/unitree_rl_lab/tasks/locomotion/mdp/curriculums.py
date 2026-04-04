@@ -189,3 +189,137 @@ def command_levels_vel(
 
     # 返回当前最大速度
     return torch.tensor(base_velocity_ranges.lin_vel_x[1], device=env.device)
+
+
+def difficulty_levels_two_stage(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    reward_term_name: str = "two_stage_standing",
+    range_multiplier: Sequence[float] = (0.3, 1.0),
+) -> torch.Tensor:
+    """
+    两段式恢复难度课程学习函数
+
+    物理意义：
+    1. 渐进式恢复：从简单的侧卧状态开始，逐渐增加到复杂状态
+    2. 自适应难度：根据恢复表现动态调整初始状态难度
+    3. 能力建设：确保策略在简单任务上表现良好后再增加难度
+    4. 泛化能力：最终在各种初始状态下都能成功恢复
+
+    工作原理：
+    - 初始化时设置初始和最终的状态难度范围
+    - 每个 episode 结束后检查恢复奖励
+    - 如果恢复奖励 > 80%，增加初始状态的随机性（增加难度）
+    - 难度范围不会超过最终设定的范围
+
+    难度调整：
+    - 初始难度 = 原始难度 × range_multiplier[0]
+    - 最终难度 = 原始难度 × range_multiplier[1]
+    - 每次调整增加初始随机性的范围
+
+    Args:
+        env: 强化学习环境实例
+        env_ids: 需要更新的环境索引列表
+        reward_term_name: 用于评估表现的奖励项名称（通常是两段式站立奖励）
+        range_multiplier: 难度乘数，(初始乘数, 最终乘数)
+                     默认 (0.3, 1.0) 表示从30%到100%的原始难度
+
+    Returns:
+        当前难度级别（用于监控）
+    """
+
+    # 获取事件配置中的重置参数
+    reset_event = env.events.get_term("randomize_reset_base")
+    if reset_event is None:
+        # 如果没有找到重置事件，返回默认难度
+        return torch.ones(len(env_ids), device=env.device)
+
+    pose_range = reset_event.params["pose_range"]
+
+    # 初始化：只在第一个 episode 执行
+    if env.common_step_counter == 0:
+        # 保存原始pose范围
+        env._original_pose_range = {
+            "roll": pose_range["roll"],
+            "pitch": pose_range["pitch"],
+            "yaw": pose_range["yaw"],
+        }
+
+        # 计算初始和最终的范围
+        env._initial_pose_range = {
+            "roll": (env._original_pose_range["roll"][0] * range_multiplier[0],
+                    env._original_pose_range["roll"][1] * range_multiplier[0]),
+            "pitch": (env._original_pose_range["pitch"][0] * range_multiplier[0],
+                     env._original_pose_range["pitch"][1] * range_multiplier[0]),
+            "yaw": (env._original_pose_range["yaw"][0] * range_multiplier[0],
+                   env._original_pose_range["yaw"][1] * range_multiplier[0]),
+        }
+
+        env._final_pose_range = {
+            "roll": (env._original_pose_range["roll"][0] * range_multiplier[1],
+                    env._original_pose_range["roll"][1] * range_multiplier[1]),
+            "pitch": (env._original_pose_range["pitch"][0] * range_multiplier[1],
+                     env._original_pose_range["pitch"][1] * range_multiplier[1]),
+            "yaw": (env._original_pose_range["yaw"][0] * range_multiplier[1],
+                   env._original_pose_range["yaw"][1] * range_multiplier[1]),
+        }
+
+        # 初始化pose范围为初始值
+        pose_range.update(env._initial_pose_range)
+
+    # 每个 episode 结束后更新课程
+    if env.common_step_counter % env.max_episode_length == 0:
+
+        # 获取 episode 累积奖励
+        episode_sums = env.reward_manager._episode_sums[reward_term_name]
+
+        # 获取奖励项配置
+        reward_term_cfg = env.reward_manager.get_term_cfg(reward_term_name)
+
+        # 定义难度调整量
+        delta_difficulty = 0.1  # 每次增加10%的随机性
+
+        # 判断是否需要增加难度
+        if torch.mean(episode_sums[env_ids]) / env.max_episode_length_s > 0.8 * reward_term_cfg.weight:
+
+            # 计算新的pose范围
+            new_roll_range = (
+                pose_range["roll"][0] - delta_difficulty,
+                pose_range["roll"][1] + delta_difficulty
+            )
+            new_pitch_range = (
+                pose_range["pitch"][0] - delta_difficulty,
+                pose_range["pitch"][1] + delta_difficulty
+            )
+            new_yaw_range = (
+                pose_range["yaw"][0] - delta_difficulty,
+                pose_range["yaw"][1] + delta_difficulty
+            )
+
+            # 限制难度不超过最终范围
+            new_roll_range = (
+                max(new_roll_range[0], env._final_pose_range["roll"][0]),
+                min(new_roll_range[1], env._final_pose_range["roll"][1])
+            )
+            new_pitch_range = (
+                max(new_pitch_range[0], env._final_pose_range["pitch"][0]),
+                min(new_pitch_range[1], env._final_pose_range["pitch"][1])
+            )
+            new_yaw_range = (
+                max(new_yaw_range[0], env._final_pose_range["yaw"][0]),
+                min(new_yaw_range[1], env._final_pose_range["yaw"][1])
+            )
+
+            # 更新pose范围
+            pose_range.update({
+                "roll": new_roll_range,
+                "pitch": new_pitch_range,
+                "yaw": new_yaw_range
+            })
+
+    # 返回当前难度级别（使用roll角度范围的宽度作为指标）
+    current_difficulty = pose_range["roll"][1] - pose_range["roll"][0]
+    max_difficulty = env._final_pose_range["roll"][1] - env._final_pose_range["roll"][0]
+    difficulty_level = current_difficulty / max_difficulty if max_difficulty > 0 else 1.0
+
+    return torch.ones(len(env_ids), device=env.device) * difficulty_level

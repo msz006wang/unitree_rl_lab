@@ -44,3 +44,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+
+# Two-Stage Recovery registration (侧卧恢复训练)
+gym.register(
+    id="Unitree-Go2WArm-TwoStage-Recovery-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.two_stage_recovery_env_cfg:TwoStageRecoveryFlatEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.two_stage_recovery_env_cfg:TwoStageRecoveryPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)

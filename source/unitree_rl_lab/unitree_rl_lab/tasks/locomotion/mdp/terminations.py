@@ -164,3 +164,64 @@ def terrain_out_of_bounds(
         return torch.logical_or(x_out_of_bounds, y_out_of_bounds)
     else:
         raise ValueError("Received unsupported terrain type, must be either 'plane' or 'generator'.")
+
+
+def is_success_stand(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    min_upright: float = 0.8,
+    min_height: float = 0.6,
+    max_tilt: float = 0.3,
+    duration: float = 1.0
+) -> torch.Tensor:
+    """
+    检测是否成功站立
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 资产配置
+        min_upright: 最小直立度（投影重力z分量）
+        min_height: 最小站立高度
+        max_tilt: 最大倾斜角度
+        duration: 持续站立时间阈值
+
+    Returns:
+        是否成功站立的布尔张量
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # 获取机器人状态
+    projected_gravity = asset.data.projected_gravity_b[:, 2]  # Z轴投影重力
+    body_height = asset.data.root_pos_w[:, 2]  # 身体高度
+    tilt_angle = torch.acos(torch.clamp(projected_gravity, -1.0, 1.0))  # 倾斜角度
+
+    # 判断是否达到站立标准
+    is_upright = projected_gravity >= min_upright
+    is_high_enough = body_height >= min_height
+    is_not_tilted = tilt_angle <= max_tilt
+
+    # 所有条件都满足
+    current_success = torch.logical_and(is_upright, torch.logical_and(is_high_enough, is_not_tilted))
+
+    # 持续时间检查
+    if not hasattr(env, "success_stand_timer"):
+        env.success_stand_timer = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+
+    # 更新计时器
+    env.success_stand_timer = torch.where(
+        current_success,
+        env.success_stand_timer + env.step_dt,
+        torch.zeros_like(env.success_stand_timer)
+    )
+
+    # 检查是否持续足够时间
+    sustained_success = env.success_stand_timer >= duration
+
+    # 重置计时器（如果不再成功）
+    env.success_stand_timer = torch.where(
+        current_success,
+        env.success_stand_timer,
+        torch.zeros_like(env.success_stand_timer)
+    )
+
+    return sustained_success

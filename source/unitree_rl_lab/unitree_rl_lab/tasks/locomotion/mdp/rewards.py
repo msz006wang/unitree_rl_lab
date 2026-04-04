@@ -257,6 +257,41 @@ Additional reward functions from msz006_go2w framework.
 """
 
 
+def joint_vel_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """关节速度惩罚 - 限制关节速度超过阈值
+
+    物理意义：
+    1. 运动平滑：防止关节速度过大导致动作不流畅
+    2. 安全保护：避免高速运动造成的机械应力
+    3. 精度控制：提高轨迹跟踪精度
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        threshold: 速度阈值 (rad/s)，超过此值的速度将被惩罚
+
+    Returns:
+        关节速度惩罚值（正数），速度越大惩罚越大
+    """
+    # 提取机器人数据
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取关节速度
+    joint_velocities = torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids])
+
+    # 计算超过阈值的部分（只惩罚超过阈值的速度）
+    excess_velocity = torch.clamp(joint_velocities - threshold, min=0.0)
+
+    # 平方惩罚：速度越大惩罚呈指数增长
+    penalty = torch.sum(torch.square(excess_velocity), dim=-1)
+
+    return penalty
+
+
 def joint_pos_penalty(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -1036,5 +1071,163 @@ def joint_contact_reward(
         0.5,  # 有接触时的奖励
         torch.zeros(env.num_envs, device=env.device),
     )
+
+    return reward
+
+
+def body_lin_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """身体线加速度惩罚 - 惩罚过大的身体线加速度
+
+    物理意义：
+    1. 平滑性：减少身体的突然加速，提高运动平滑度
+    2. 稳定性：降低加速度对平衡的影响，减少摔倒风险
+    3. 能量效率：避免不必要的能量消耗，提高续航能力
+    4. 舒适性：减少冲击和振动，提高运动舒适度
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+
+    Returns:
+        身体线加速度惩罚值（负值）
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取上一时刻的线速度（如果存在）
+    if hasattr(asset, 'last_root_lin_vel') and asset.last_root_lin_vel is not None:
+        last_lin_vel = asset.last_root_lin_vel
+        current_lin_vel = asset.data.root_lin_vel_w
+
+        # 计算加速度 (v2 - v1) / dt
+        dt = env.step_dt
+        lin_acc = (current_lin_vel - last_lin_vel) / dt
+
+        # 存储当前速度为下一时刻使用
+        asset.last_root_lin_vel = current_lin_vel.clone()
+    else:
+        # 如果没有上一时刻的速度，使用当前速度作为初始化
+        asset.last_root_lin_vel = asset.data.root_lin_vel_w.clone()
+        lin_acc = torch.zeros_like(asset.data.root_lin_vel_w)
+
+    # 计算线加速度的L2范数（xyz三个方向）
+    acc_norm = torch.norm(lin_acc[:, :3], dim=1)
+
+    # 惩罚过大的加速度
+    reward = -torch.square(acc_norm)
+
+    return reward
+
+
+def action_rate_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """动作变化率惩罚 - 惩罚动作的快速变化
+
+    物理意义：
+    1. 平滑控制：鼓励平滑的动作过渡，避免突变
+    2. 能量效率：减少动作变化带来的能量浪费
+    3. 稳定性：降低因快速动作导致的平衡失调
+    4. 硬件保护：保护执行器免受频繁切换的冲击
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+
+    Returns:
+        动作变化率惩罚值（负值）
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取上一时刻的动作（如果存在）
+    if hasattr(asset, 'last_action') and asset.last_action is not None:
+        last_action = asset.last_action
+        current_action = env.action_manager.data.actions_raw[env.action_manager.actions_idx].flatten()
+
+        # 计算动作变化率
+        action_delta = torch.abs(current_action - last_action)
+        action_rate = torch.norm(action_delta, dim=0)
+
+        # 存储当前动作为下一时刻使用
+        asset.last_action = current_action.clone()
+    else:
+        # 如果没有上一时刻的动作，使用当前动作作为初始化
+        current_action = env.action_manager.data.actions_raw[env.action_manager.actions_idx].flatten()
+        asset.last_action = current_action.clone()
+        action_rate = torch.zeros(env.num_envs, device=env.device)
+
+    # 惩罚过大的动作变化率
+    reward = -torch.square(action_rate)
+
+    return reward
+
+
+def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, soft_ratio: float = 1.0) -> torch.Tensor:
+    """关节位置限制惩罚 - 惩罚超出软限制的关节位置
+
+    物理意义：
+    1. 安全性：防止关节运动到机械限位附近，避免硬件损坏
+    2. 运动学约束：确保关节在有效工作范围内，避免奇异位形
+    3. 寿命保护：延长机械部件使用寿命，减少磨损
+    4. 控制精度：保持在关节的高效工作区间内
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        soft_ratio: 软比例因子，1.0表示使用默认软限位
+
+    Returns:
+        关节位置限制惩罚值（负值）
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取关节位置和软限制
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    joint_pos_limits_min = asset.data.soft_joint_pos_limits_min[:, asset_cfg.joint_ids] * soft_ratio
+    joint_pos_limits_max = asset.data.soft_joint_pos_limits_max[:, asset_cfg.joint_ids] * soft_ratio
+
+    # 计算超出限位的程度
+    pos_above_max = torch.max(joint_pos - joint_pos_limits_max, torch.zeros_like(joint_pos))
+    pos_below_min = torch.max(joint_pos_limits_min - joint_pos, torch.zeros_like(joint_pos))
+
+    # 计算惩罚（平方惩罚）
+    pos_penalty = torch.square(pos_above_max) + torch.square(pos_below_min)
+
+    # 对所有关节求和并返回平均惩罚
+    reward = -torch.sum(pos_penalty, dim=1)
+
+    return reward
+
+
+def joint_vel_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, soft_ratio: float = 1.0) -> torch.Tensor:
+    """关节速度限制惩罚 - 惩罚超出软限制的关节速度
+
+    物理意义：
+    1. 安全性：防止关节速度过快，避免失控和机械损坏
+    2. 平滑性：鼓励平滑的运动，减少冲击和振动
+    3. 能量效率：减少高速运动带来的不必要的能量消耗
+    4. 精度控制：提高轨迹跟踪精度，避免过冲
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        soft_ratio: 软比例因子，1.0表示使用默认软限位
+
+    Returns:
+        关节速度限制惩罚值（负值）
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # 获取关节速度和软限制
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    joint_vel_limits_max = asset.data.soft_joint_vel_limits_max[:, asset_cfg.joint_ids] * soft_ratio
+    joint_vel_limits_min = asset.data.soft_joint_vel_limits_min[:, asset_cfg.joint_ids] * soft_ratio
+
+    # 计算超出限位的程度
+    vel_above_max = torch.max(joint_vel - joint_vel_limits_max, torch.zeros_like(joint_vel))
+    vel_below_min = torch.max(joint_vel_limits_min - joint_vel, torch.zeros_like(joint_vel))
+
+    # 计算惩罚（平方惩罚）
+    vel_penalty = torch.square(vel_above_max) + torch.square(vel_below_min)
+
+    # 对所有关节求和并返回平均惩罚
+    reward = -torch.sum(vel_penalty, dim=1)
 
     return reward

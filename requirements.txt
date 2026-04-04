@@ -1,0 +1,207 @@
+# Requirements for GO2W Wheel-Legged Robot Reinforcement Learning Project
+# Updated based on go2w_arm training framework code analysis
+# Last Updated: 2026-04-03
+
+# ============================================================================
+# Core Training Dependencies
+# ============================================================================
+
+# PyTorch - Deep Learning Framework (via pip)
+# Note: Version may vary based on CUDA availability
+torch>=2.0.0
+
+# Gymnasium - Reinforcement Learning Environment API (via pip)
+gymnasium>=0.29.0
+
+# Isaac Lab Core Dependencies
+# Note: These are automatically available when Isaac Sim 5.1.0 is installed
+# isaaclab (Core Framework) - core RL framework
+isaaclab>=0.54.3
+# isaaclab_assets (Assets and Environments) - robot and environment assets
+isaaclab_assets>=0.2.4
+# isaaclab_tasks (Task Definitions) - task configurations and environments
+isaaclab_tasks>=0.11.14
+# isaaclab_rl (RL Algorithms) - reinforcement learning algorithms
+isaaclab_rl>=0.5.0
+
+# RSL-RL Dependencies
+# Note: RSL-RL is included with Isaac Sim installation or installed separately
+rsl-rl>=0.4.0
+
+# ============================================================================
+# ============================================================================
+# Isaac Lab Additional Dependencies (pre-installed in Isaac Sim environment)
+# ============================================================================
+
+# Mathematical and scientific computing
+numpy>=1.24.0
+
+# Visualization (for debugging and plotting)
+matplotlib>=3.5.0
+
+# Warp Lang (Isaac Sim ray tracing and physics simulation)
+# Note: Typically installed with Isaac Sim
+warp-lang>=0.15.0
+
+# ============================================================================
+# Project-Specific Dependencies
+# ============================================================================
+
+# System utilities (for monitoring and resource management)
+psutil>=5.9.0
+
+# Command-line argument completion
+argcomplete>=3.0.0
+
+# Python version requirement
+python>=3.10
+
+# ============================================================================
+# Standard Library (no installation required)
+# ============================================================================
+# argparse, os, sys, datetime, pathlib, math, typing, re
+# These are Python standard library modules and are always available
+
+# ============================================================================
+# Optional Dependencies for Development/Testing
+# ============================================================================
+
+# Code quality and formatting
+black>=24.0.0
+flake8>=7.0.0
+isort>=5.12.0
+mypy>=1.0.0
+pylint>=3.0.0
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=5.0.0
+pytest-mock>=3.10.0
+coverage>=7.0.0
+
+# Development tools
+ipython>=8.0.0
+jupyter>=1.0.0
+
+# Debugging and profiling
+pdb>=0.0.0
+py-spy>=0.3.0
+memory-profiler>=3.0.0
+
+# Build tools
+build>=0.10.0
+
+# Version control
+pre-commit>=3.0.0
+
+# ============================================================================
+# Isaac Sim and Isaac Lab Documentation Dependencies (optional)
+# ============================================================================
+
+# Sphinx documentation framework
+sphinx-book-theme>=1.0.1
+myst-parser>=0.18.0
+sphinxcontrib-bibtex>=2.5.0
+autodocsumm>=0.24.0
+sphinx-copybutton>=0.5.0
+sphinx-icon>=0.0.1
+sphinx-design>=0.12.7
+sphinx-emoji>=0.4.0
+sphinx-tabs>=0.13.3
+sphinx-multiversion==0.2.4
+
+# ============================================================================
+# Hardware and Acceleration (optional)
+# ============================================================================
+
+# CUDA acceleration is handled by PyTorch automatically
+# For specific GPU optimizations:
+# nvidia-cuda-runtime>=12.0  # Only if using specific CUDA features
+# nvidia-cudnn>=8.9.0  # Only if using specific cuDNN features
+
+# ============================================================================
+# Installation Instructions
+# ============================================================================
+
+# Isaac Sim Python Environment (Recommended)
+# Note: Most Isaac Lab dependencies are pre-installed in Isaac Sim 5.1.0 environment
+# You typically don't need to install isaaclab packages separately.
+#
+# Method 1: Using Isaac Sim Python environment
+#   source /home/jay/miniconda3/etc/profile.d/conda.sh
+#   conda activate env_isaaclab
+#
+# Method 2: Standard installation
+#   pip install torch==2.7.0+cu128 gymnasium==1.2.1 psutil==5.9.8 argcomplete==3.6.3
+#
+# ============================================================================
+# Environment Information
+# ============================================================================
+
+# Isaac Sim Version: 5.1.0-rc.19+release.26219.9c81211b.gl (~5.1.0)
+# Python Version Requirement: >=3.10
+# CUDA Support: CUDA 12.x (via torch==2.7.0+cu128)
+# RAM Recommendation: 16GB minimum, 32GB preferred for full training
+# Disk Space: 10GB+ available for cache and logs
+
+# ============================================================================
+# Package Details (from conda environment env_isaaclab)
+# ============================================================================
+
+# Installation Method: pip
+
+# Core ML Framework:
+#   torch: 2.7.0+cu128 (pip installed, includes CUDA 12.x support)
+#
+# Isaac Lab Framework:
+#   isaaclab: 0.54.3 (pip installed, editable project location: /home/jay/IsaacLab/source/isaaclab)
+#   isaaclab_assets: 0.2.4 (pip installed)
+#   isaaclab_tasks: 0.11.14 (pip installed)
+#   isaaclab_rl: 0.5.0 (pip installed, editable project location: /home/jay/IsaacLab/source/isaaclab_rl)
+#
+# RSL-RL:
+#   rsl-rl: 0.4.0 (included with Isaac Sim, installed via pip or pre-installed)
+#
+# System Utilities:
+#   psutil: 5.9.8 (pip installed)
+#   argcomplete: 3.6.3 (pip installed)
+#
+# Isaac Sim Components (pre-installed):
+#   numpy, matplotlib, warp-lang (scientific computing)
+#
+# Python and System:
+#   python>=3.10
+#
+# ============================================================================
+# Troubleshooting
+# ============================================================================
+
+# Common issues and solutions:
+#
+# 1. "ModuleNotFoundError: No module named 'omni.timeline'"
+#    Cause: Importing Isaac Lab modules before SimulationApp instantiation
+#    Solution: Training scripts are configured correctly. Use provided scripts.
+#
+# 2. "Isaac Sim Crashes (Segmentation Fault)"
+#    Cause: C++ template symbol parsing issues or resource limits
+#    Solution: Use minimal training script with reduced environment count
+#    Use: ./scripts/train_direct.sh (4 envs, 10 iterations for testing)
+#
+# 3. "Parameter Conflicts"
+#    Cause: Overlapping argument definitions
+#    Solution: Use fixed training scripts that avoid conflicts
+#
+# 4. "Module Import Errors"
+#    Cause: Isaac Lab modules imported before SimulationApp instantiation
+#    Solution: Use provided training scripts, which ensure correct import order
+#
+# ============================================================================
+# Project Information
+# ============================================================================
+
+# Project: GO2W Wheel-Legged Robot RL Lab
+# Repository: https://github.com/unitree/robotics/unitree-rl-lab
+# Isaac Lab Version: 0.54.3
+# Isaac Sim Version: 5.1.0-rc.19+release.26219.9c81211b.gl (~5.1.0)
+#
+# ============================================================================
