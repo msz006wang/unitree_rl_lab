@@ -225,3 +225,73 @@ def is_success_stand(
     )
 
     return sustained_success
+
+
+def is_success_stable(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    min_upright: float = 0.80,  # 降低直立度要求，从0.9到0.80，更容易达到
+    min_height: float = 0.60,  # 降低高度要求，从0.7到0.60，更容易达到
+    max_tilt: float = 0.40,    # 放宽倾斜限制，从0.25到0.40，更宽松
+    duration: float = 1.0,     # 缩短站立时间要求，从2.0到1.0，更快反馈
+) -> torch.Tensor:
+    """检测是否成功稳定站立（驻留成功）
+
+    此函数用于提前终止训练，当机器人在指定时间内保持稳定站立状态时，
+    认为任务成功完成，避免机器人站立后因继续探索而摔倒。
+
+    成功标准：
+    1. 投影重力 Z 分量 >= min_upright（默认 0.80，接近完全直立）
+    2. 身体高度 >= min_height（默认 0.60m，正常站立高度）
+    3. 倾斜角度 <= max_tilt（默认 0.40 rad，约 23°）
+    4. 持续时间 >= duration（默认 1.0 秒）
+
+    与 is_success_stand 的区别：
+    - 此函数要求更严格的直立度（0.80 vs 0.8）
+    - 此函数用于提前终止，而非持续奖励
+    - 此函数专门针对"驻留成功"场景
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 资产配置
+        min_upright: 最小直立度（投影重力z分量）
+        min_height: 最小站立高度
+        max_tilt: 最大倾斜角度
+        duration: 持续站立时间阈值
+
+    Returns:
+        是否成功稳定站立的布尔张量
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # 获取机器人状态
+    projected_gravity = asset.data.projected_gravity_b[:, 2]  # Z轴投影重力
+    body_height = asset.data.root_pos_w[:, 2]  # 身体高度
+    tilt_angle = torch.acos(torch.clamp(projected_gravity, -1.0, 1.0))  # 倾斜角度
+
+    # 判断是否达到稳定站立标准
+    is_upright = projected_gravity >= min_upright
+    is_high_enough = body_height >= min_height
+    is_not_tilted = tilt_angle <= max_tilt
+
+    # 所有条件都满足
+    current_success = torch.logical_and(is_upright, torch.logical_and(is_high_enough, is_not_tilted))
+
+    # 持续时间检查
+    if not hasattr(env, "success_stable_timer"):
+        env.success_stable_timer = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+
+    # 更新计时器
+    env.success_stable_timer = torch.where(
+        current_success,
+        env.success_stable_timer + env.step_dt,
+        torch.zeros_like(env.success_stable_timer)
+    )
+
+    # 检查是否持续足够时间
+    sustained_success = env.success_stable_timer >= duration
+
+    # 不重置计时器，让它在整个 episode 中累积
+    # 这样可以确保机器人真正稳定站立，而不是反复起倒
+
+    return sustained_success

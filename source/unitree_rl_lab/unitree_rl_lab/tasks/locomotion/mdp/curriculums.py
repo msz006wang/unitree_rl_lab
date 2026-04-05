@@ -229,7 +229,7 @@ def difficulty_levels_two_stage(
     """
 
     # 获取事件配置中的重置参数
-    reset_event = env.events.get_term("randomize_reset_base")
+    reset_event = env.cfg.events.randomize_reset_base
     if reset_event is None:
         # 如果没有找到重置事件，返回默认难度
         return torch.ones(len(env_ids), device=env.device)
@@ -323,3 +323,303 @@ def difficulty_levels_two_stage(
     difficulty_level = current_difficulty / max_difficulty if max_difficulty > 0 else 1.0
 
     return torch.ones(len(env_ids), device=env.device) * difficulty_level
+
+
+# =============================================================================
+# Multi-Level Posture Curriculum Configuration
+# =============================================================================
+
+POSTURE_CURRICULUM_LEVELS = {
+    0: {
+        "name": "Upright Small Tilt (Phase 1 Baseline)",
+        "description": "Basic balance maintenance from near-upright position",
+        "pose_range": {
+            "roll": (-0.2, 0.2),  # ±11.5° (Phase 1: 从直立小倾斜开始)
+            "pitch": (-0.1, 0.1),  # ±5.7°
+            "yaw": (-3.14, 3.14),  # Full range
+            "x": (-0.1, 0.1),
+            "y": (-0.1, 0.1),
+            "z": (0.45, 0.5)  # 提高初始高度，更接近站立状态
+        },
+        "velocity_range": {
+            "x": (-0.05, 0.05),
+            "y": (-0.05, 0.05),
+            "z": (-0.02, 0.02),
+            "roll": (-0.05, 0.05),
+            "pitch": (-0.05, 0.05),
+            "yaw": (-0.1, 0.1),
+        },
+        "success_threshold": 0.70,  # 降低到 70%，更容易升级
+        "min_episodes": 200,  # 增加到 200，给足够时间学习
+        "focus": "Learn to stand still from near-upright position"
+    },
+    1: {
+        "name": "Small Posture Variation",
+        "description": "Recovery from small tilt with leg coordination",
+        "pose_range": {
+            "roll": (-0.4, 0.4),  # ±23°
+            "pitch": (-0.2, 0.2),  # ±11.5°
+            "yaw": (-3.14, 3.14),
+            "x": (-0.2, 0.2),
+            "y": (-0.2, 0.2),
+            "z": (0.35, 0.5)
+        },
+        "velocity_range": {
+            "x": (-0.1, 0.1),
+            "y": (-0.1, 0.1),
+            "z": (-0.05, 0.05),
+            "roll": (-0.1, 0.1),
+            "pitch": (-0.1, 0.1),
+            "yaw": (-0.1, 0.1),
+        },
+        "success_threshold": 0.60,  # 降低到 60%
+        "min_episodes": 200,
+        "focus": "Learn vertical push-up from small tilt"
+    },
+    2: {
+        "name": "Moderate Posture Variation",
+        "description": "Recovery from moderate tilt with momentum",
+        "pose_range": {
+            "roll": (-0.6, 0.6),  # ±34°
+            "pitch": (-0.3, 0.3),  # ±17°
+            "yaw": (-3.14, 3.14),
+            "x": (-0.3, 0.3),
+            "y": (-0.3, 0.3),
+            "z": (0.3, 0.45)
+        },
+        "velocity_range": {
+            "x": (-0.1, 0.1),
+            "y": (-0.1, 0.1),
+            "z": (-0.05, 0.05),
+            "roll": (-0.1, 0.1),
+            "pitch": (-0.1, 0.1),
+            "yaw": (-0.1, 0.1),
+        },
+        "success_threshold": 0.50,  # 降低到 50%
+        "min_episodes": 200,
+        "focus": "Learn torque distribution with momentum"
+    },
+    3: {
+        "name": "Large Posture Variation (Target)",
+        "description": "Full recovery from large tilt - final target",
+        "pose_range": {
+            "roll": (-0.8, 0.8),  # ±45° (目标姿态，保持不变)
+            "pitch": (-0.3, 0.3),  # ±17°
+            "yaw": (-3.14, 3.14),
+            "x": (-0.2, 0.2),
+            "y": (-0.2, 0.2),
+            "z": (0.4, 0.5)
+        },
+        "velocity_range": {
+            "x": (-0.1, 0.1),
+            "y": (-0.1, 0.1),
+            "z": (-0.05, 0.05),
+            "roll": (-0.1, 0.1),
+            "pitch": (-0.1, 0.1),
+            "yaw": (-0.1, 0.1),
+        },
+        "success_threshold": 0.40,  # 降低到 40%
+        "min_episodes": 200,
+        "focus": "Complete recovery from large tilt (±45°)"
+    }
+}
+
+
+def posture_curriculum_levels(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    check_interval: int = 100,
+    enable_backward: bool = True,
+    hysteresis: float = 0.1
+) -> torch.Tensor:
+    """
+    Multi-level posture recovery curriculum learning function.
+
+    This function implements a 4-level progressive curriculum for the GO2W-ARM robot's
+    two-stage recovery task, starting from simple balance and gradually increasing to
+    extreme orientation recovery.
+
+    Physical Principles:
+    1. Progressive Skill Building: Each level builds on skills learned in previous levels
+    2. Difficulty Gradient: Smooth transition from easy to hard initial conditions
+    3. Adaptive Progression: Automatic advancement based on performance metrics
+    4. Backward Recovery: Reduces difficulty when performance degrades
+
+    Level Progression:
+    - Level 0 (±5°): Learn basic balance with arm weight
+    - Level 1 (±30°): Learn vertical push-up from low height
+    - Level 2 (±60°): Learn recovery from moderate tilt
+    - Level 3 (±180°): Learn complete flip recovery
+
+    Args:
+        env: ManagerBasedRLEnv instance
+        env_ids: Environment indices to update
+        asset_cfg: Robot asset configuration
+        check_interval: Episodes between curriculum checks (default: 100)
+        enable_backward: Whether to allow backward level recovery (default: True)
+        hysteresis: Hysteresis factor to prevent level oscillation (default: 0.1)
+
+    Returns:
+        Success flags tensor (all zeros, function mainly updates state)
+
+    Note:
+        This function maintains curriculum state in the environment:
+        - env._posture_curriculum_level: Current level for each environment (0-3)
+        - env._posture_curriculum_episode_count: Episodes at current level
+        - env._posture_curriculum_success_count: Successful episodes
+        - env._posture_curriculum_timeout_count: Timeout episodes
+        - env._posture_curriculum_last_check: Last check step
+        - env._posture_curriculum_frozen: Manual freeze flag
+        - env._posture_curriculum_history: List of check results
+    """
+    # Initialize curriculum state (first call only)
+    if not hasattr(env, "_posture_curriculum_level"):
+        env._posture_curriculum_level = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        env._posture_curriculum_episode_count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        env._posture_curriculum_success_count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        env._posture_curriculum_timeout_count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        env._posture_curriculum_last_check = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        env._posture_curriculum_frozen = False
+        env._posture_curriculum_history = []
+
+        print("[Posture Curriculum] Initialized 4-level posture curriculum")
+        print(f"  Level 0: {POSTURE_CURRICULUM_LEVELS[0]['name']}")
+        print(f"  Level 1: {POSTURE_CURRICULUM_LEVELS[1]['name']}")
+        print(f"  Level 2: {POSTURE_CURRICULUM_LEVELS[2]['name']}")
+        print(f"  Level 3: {POSTURE_CURRICULUM_LEVELS[3]['name']}")
+
+    # Return immediately if frozen
+    if env._posture_curriculum_frozen:
+        return torch.zeros(len(env_ids), device=env.device)
+
+    # Update episode count
+    env._posture_curriculum_episode_count[env_ids] += 1
+
+    # Get reset event to update parameters
+    reset_event = env.cfg.events.randomize_reset_base
+    if reset_event is None:
+        return torch.mean(env._posture_curriculum_level[env_ids].float())
+
+    # Check if we need to evaluate curriculum progression
+    should_check = (env._posture_curriculum_episode_count[env_ids] % check_interval == 0) & \
+                   (env._posture_curriculum_episode_count[env_ids] > 0)
+
+    if should_check.any():
+        check_ids = env_ids[should_check]
+
+        # Check for episode terminations to count successes/timeout
+        # This requires access to termination manager state
+        if hasattr(env, 'termination_manager'):
+            # Get termination states from last reset
+            # Note: This depends on Isaac Lab's internal state tracking
+            # We'll use a simplified approach based on episode length
+            pass
+
+        for env_id in check_ids:
+            current_level = env._posture_curriculum_level[env_id].item()
+            episode_count = env._posture_curriculum_episode_count[env_id].item()
+            success_count = env._posture_curriculum_success_count[env_id].item()
+            timeout_count = env._posture_curriculum_timeout_count[env_id].item()
+
+            # Calculate success rate (use timeout count as proxy for survival)
+            # If not timed out, robot survived the episode
+            survival_rate = 1.0 - (timeout_count / episode_count) if episode_count > 0 else 0.0
+
+            # Get current level's threshold
+            level_config = POSTURE_CURRICULUM_LEVELS.get(current_level)
+            if level_config is None:
+                continue
+
+            threshold = level_config["success_threshold"]
+            min_episodes = level_config["min_episodes"]
+
+            # Check if we should advance to next level
+            if episode_count >= min_episodes:
+                if survival_rate >= threshold:
+                    # Advance to next level
+                    if current_level < 3:
+                        new_level = current_level + 1
+                        env._posture_curriculum_level[env_id] = new_level
+                        env._posture_curriculum_episode_count[env_id] = 0
+                        env._posture_curriculum_success_count[env_id] = 0
+                        env._posture_curriculum_timeout_count[env_id] = 0
+
+                        # Update reset parameters
+                        _update_reset_parameters(env, env_id, new_level)
+
+                        log_entry = {
+                            "step": env.common_step_counter,
+                            "env_id": env_id.item() if torch.is_tensor(env_id) else env_id,
+                            "transition": f"{current_level} -> {new_level}",
+                            "survival_rate": survival_rate,
+                            "level_name": POSTURE_CURRICULUM_LEVELS[new_level]["name"]
+                        }
+                        env._posture_curriculum_history.append(log_entry)
+
+                        print(f"[Posture Curriculum] Env {env_id}: Level {current_level} -> Level {new_level} "
+                              f"(survival_rate={survival_rate:.2f}, threshold={threshold:.2f})")
+
+                elif enable_backward and survival_rate < threshold * (1.0 - hysteresis):
+                    # Backward recovery
+                    if current_level > 0:
+                        new_level = current_level - 1
+                        env._posture_curriculum_level[env_id] = new_level
+                        env._posture_curriculum_episode_count[env_id] = 0
+                        env._posture_curriculum_success_count[env_id] = 0
+                        env._posture_curriculum_timeout_count[env_id] = 0
+
+                        # Update reset parameters
+                        _update_reset_parameters(env, env_id, new_level)
+
+                        log_entry = {
+                            "step": env.common_step_counter,
+                            "env_id": env_id.item() if torch.is_tensor(env_id) else env_id,
+                            "transition": f"{current_level} -> {new_level} (backward)",
+                            "survival_rate": survival_rate,
+                            "level_name": POSTURE_CURRICULUM_LEVELS[new_level]["name"]
+                        }
+                        env._posture_curriculum_history.append(log_entry)
+
+                        print(f"[Posture Curriculum] Env {env_id}: Level {current_level} -> Level {new_level} "
+                              f"(backward recovery, survival_rate={survival_rate:.2f})")
+
+    # 返回当前环境的平均难度级别（标量），供 CurriculumManager 使用
+    return torch.mean(env._posture_curriculum_level[env_ids].float())
+
+
+def _update_reset_parameters(env: ManagerBasedRLEnv, env_id: int, level: int):
+    """
+    Update reset parameters based on curriculum level.
+
+    Args:
+        env: ManagerBasedRLEnv instance
+        env_id: Environment ID to update
+        level: Curriculum level (0-3)
+    """
+    # Get level configuration
+    level_config = POSTURE_CURRICULUM_LEVELS.get(level)
+    if level_config is None:
+        print(f"[Posture Curriculum] Warning: Invalid level {level}")
+        return
+
+    pose_range = level_config["pose_range"]
+    velocity_range = level_config["velocity_range"]
+
+    # Get reset event
+    reset_event = env.cfg.events.randomize_reset_base
+    if reset_event is None:
+        print(f"[Posture Curriculum] Warning: reset_event not found")
+        return
+
+    # Update pose range
+    if hasattr(reset_event, 'params'):
+        reset_event.params["pose_range"] = pose_range
+        reset_event.params["velocity_range"] = velocity_range
+
+        print(f"[Posture Curriculum] Env {env_id}: Updated to Level {level} - {level_config['name']}")
+        print(f"  Focus: {level_config['focus']}")
+        print(f"  New pose range: roll={pose_range['roll']}, pitch={pose_range['pitch']}, z={pose_range['z']}")
+        print(f"  Threshold: {level_config['success_threshold']*100:.0f}%, Min episodes: {level_config['min_episodes']}")
+    else:
+        print(f"[Posture Curriculum] Warning: reset_event.params not accessible")

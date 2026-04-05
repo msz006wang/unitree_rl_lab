@@ -1230,6 +1230,224 @@ def contact_adaptive(
     return undesired * full_penalty_weight * weight_coefficient
 
 
+def action_rate_brake(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    full_penalty_weight: float = -0.01,
+    reduced_penalty_weight: float = -0.0001,
+    orientation_threshold_low: float = 0.5,
+    orientation_threshold_high: float = 0.85,
+    transition_type: str = "exponential",
+    transition_smoothness: float = 3.0,
+) -> torch.Tensor:
+    """动作变化率动态刹车 - 三段式权重调整
+
+    物理意义：
+    1. 倒地状态（Z < 0.5）：权重极小，允许完全释放动作进行探索
+    2. 过渡期（0.5 ≤ Z < 0.85）：动态增加惩罚权重，平滑过渡到稳定状态
+    3. 站立状态（Z ≥ 0.85）：恢复全额惩罚，强迫机器人瞬间收敛动作
+
+    权重函数：
+    - Z < 0.5: w = reduced_weight/full_weight
+    - 0.5 ≤ Z < 0.85: w = f_transition(Z)
+    - Z ≥ 0.85: w = 1.0
+
+    过渡函数类型：
+    - linear: 线性插值
+    - exponential: 指数增长（推荐，更自然的刹车感）
+    - scurve: S形曲线（最平滑）
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        full_penalty_weight: 完整惩罚权重（站立时使用）
+        reduced_penalty_weight: 降低惩罚权重（倒地时使用，通常为full的1/100）
+        orientation_threshold_low: 低姿态阈值（倒地/过渡分界）
+        orientation_threshold_high: 高姿态阈值（过渡/站立分界）
+        transition_type: 过渡类型（"linear"/"exponential"/"scurve"）
+        transition_smoothness: 过渡平滑度（仅对exponential和scurve有效）
+
+    Returns:
+        动作变化率惩罚值（负数）
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    # 获取姿态指标（projected_gravity 的 Z 分量）
+    uprightness = asset.data.projected_gravity_b[:, 2]
+
+    # 计算归一化的位置（在过渡区间的位置：0.0-1.0）
+    normalized_pos = (uprightness - orientation_threshold_low) / (orientation_threshold_high - orientation_threshold_low)
+
+    # 计算过渡权重系数
+    if transition_type == "linear":
+        # 线性过渡
+        transition_weight = torch.clamp(normalized_pos, 0.0, 1.0)
+    elif transition_type == "exponential":
+        # 指数过渡（更自然的刹车感）
+        # 使用指数函数实现：1 - exp(-k * x)
+        transition_weight = 1.0 - torch.exp(-transition_smoothness * torch.clamp(normalized_pos, 0.0, 1.0))
+    elif transition_type == "scurve":
+        # S形曲线（最平滑）
+        # 使用平滑的 Sigmoid 函数
+        x = torch.clamp(normalized_pos, 0.0, 1.0) * transition_smoothness
+        transition_weight = torch.sigmoid(x) / torch.sigmoid(torch.tensor(transition_smoothness, device=env.device))
+    else:
+        # 默认使用指数过渡
+        transition_weight = 1.0 - torch.exp(-transition_smoothness * torch.clamp(normalized_pos, 0.0, 1.0))
+
+    # 三段式权重计算
+    # 段1: Z < 0.5，使用降低的权重
+    weight_coefficient = torch.where(
+        uprightness < orientation_threshold_low,
+        reduced_penalty_weight / full_penalty_weight,
+        # 段2: 0.5 ≤ Z < 0.85，使用过渡权重
+        torch.where(
+            uprightness < orientation_threshold_high,
+            transition_weight,
+            # 段3: Z ≥ 0.85，使用完整权重
+            torch.ones_like(uprightness)
+        )
+    )
+
+    # 计算动作变化率
+    action_rate = torch.zeros(env.num_envs, device=env.device)
+    if hasattr(env, "last_action"):
+        action_diff = env.action_manager.action - env.last_action
+        action_rate = torch.sum(torch.square(action_diff), dim=1)
+        env.last_action = env.action_manager.action.clone()
+    else:
+        env.last_action = env.action_manager.action.clone()
+
+    # 应用动态权重
+    return action_rate * full_penalty_weight * weight_coefficient
+
+
+def torque_brake(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    full_penalty_weight: float = -2.5e-5,
+    reduced_penalty_weight: float = -2.5e-7,
+    orientation_threshold_low: float = 0.5,
+    orientation_threshold_high: float = 0.85,
+    transition_type: str = "exponential",
+    transition_smoothness: float = 3.0,
+) -> torch.Tensor:
+    """扭矩动态刹车 - 三段式权重调整
+
+    物理意义：
+    1. 倒地状态（Z < 0.5）：权重极小，允许大扭矩产生爆发力
+    2. 过渡期（0.5 ≤ Z < 0.85）：动态增加惩罚，平滑过渡到节能模式
+    3. 站立状态（Z ≥ 0.85）：恢复全额惩罚，保证能量效率
+
+    权重函数：
+    - Z < 0.5: w = reduced_weight/full_weight
+    - 0.5 ≤ Z < 0.85: w = f_transition(Z)
+    - Z ≥ 0.85: w = 1.0
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        full_penalty_weight: 完整惩罚权重（站立时使用）
+        reduced_penalty_weight: 降低惩罚权重（倒地时使用，通常为full的1/100）
+        orientation_threshold_low: 低姿态阈值（倒地/过渡分界）
+        orientation_threshold_high: 高姿态阈值（过渡/站立分界）
+        transition_type: 过渡类型（"linear"/"exponential"/"scurve"）
+        transition_smoothness: 过渡平滑度
+
+    Returns:
+        扭矩惩罚值（负数）
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    # 获取姿态指标
+    uprightness = asset.data.projected_gravity_b[:, 2]
+
+    # 计算归一化的位置（在过渡区间的位置：0.0-1.0）
+    normalized_pos = (uprightness - orientation_threshold_low) / (orientation_threshold_high - orientation_threshold_low)
+
+    # 计算过渡权重系数
+    if transition_type == "linear":
+        transition_weight = torch.clamp(normalized_pos, 0.0, 1.0)
+    elif transition_type == "exponential":
+        transition_weight = 1.0 - torch.exp(-transition_smoothness * torch.clamp(normalized_pos, 0.0, 1.0))
+    elif transition_type == "scurve":
+        x = torch.clamp(normalized_pos, 0.0, 1.0) * transition_smoothness
+        transition_weight = torch.sigmoid(x) / torch.sigmoid(torch.tensor(transition_smoothness, device=env.device))
+    else:
+        transition_weight = 1.0 - torch.exp(-transition_smoothness * torch.clamp(normalized_pos, 0.0, 1.0))
+
+    # 三段式权重计算
+    weight_coefficient = torch.where(
+        uprightness < orientation_threshold_low,
+        reduced_penalty_weight / full_penalty_weight,
+        torch.where(
+            uprightness < orientation_threshold_high,
+            transition_weight,
+            torch.ones_like(uprightness)
+        )
+    )
+
+    # 计算扭矩惩罚
+    torques = torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids])
+    torque_penalty = torch.sum(torch.square(torques), dim=1)
+
+    # 应用动态权重
+    return torque_penalty * full_penalty_weight * weight_coefficient
+
+
+def angular_momentum_damping(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    damping_weight: float = -0.5,
+    activation_threshold: float = 0.8,
+    axis_weight: tuple[float, float, float] = (1.0, 1.0, 0.0),
+) -> torch.Tensor:
+    """角动量阻尼惩罚 - 在站立瞬间抑制机身翻滚惯性
+
+    物理意义：
+    1. 虚拟阻尼器：在站立瞬间给策略施加虚拟阻尼，抵消翻滚惯性
+    2. 稳定化：强迫机器人在接近站立时主动发力抑制 Roll 和 Pitch 旋转
+    3. 平滑过渡：只在接近完全直立时激活（Z > 0.8），避免干扰恢复过程
+
+    权重函数：
+    - Z <= 0.8: weight = 0（完全不惩罚，允许自由翻滚）
+    - Z > 0.8: weight = damping_weight * (Z - 0.8) / 0.2（线性增强，Z=1.0时达到最大）
+
+    轴权重控制：
+    - Roll (x): axis_weight[0] = 1.0（抑制侧翻）
+    - Pitch (y): axis_weight[1] = 1.0（抑制前翻/后翻）
+    - Yaw (z): axis_weight[2] = 0.0（不抑制转向，允许自由旋转）
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        damping_weight: 阻尼惩罚权重（负数）
+        activation_threshold: 激活阈值（Z > 此值时开始惩罚）
+        axis_weight: 三轴权重元组 (roll, pitch, yaw)
+
+    Returns:
+        角动量阻尼惩罚值（负数）
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    # 获取姿态指标（projected_gravity 的 Z 分量）
+    uprightness = asset.data.projected_gravity_b[:, 2]
+
+    # 计算激活权重（仅在 Z > activation_threshold 时激活）
+    # 线性激活：Z=0.8时weight=0，Z=1.0时weight=1.0
+    activation_weight = torch.clamp((uprightness - activation_threshold) / (1.0 - activation_threshold), 0.0, 1.0)
+
+    # 获取机身角速度（在身体坐标系中）
+    ang_vel = asset.data.root_ang_vel_b  # shape: (num_envs, 3) -> [roll, pitch, yaw]
+
+    # 应用轴权重
+    axis_weights = torch.tensor(axis_weight, device=env.device, dtype=torch.float32)
+    weighted_ang_vel = ang_vel * axis_weights.unsqueeze(0)
+
+    # 计算角速度的平方和（惩罚值）
+    angular_penalty = torch.sum(torch.square(weighted_ang_vel), dim=1)
+
+    # 应用激活权重和阻尼权重
+    return angular_penalty * damping_weight * activation_weight
+
+
 def wheel_angular_momentum_reward(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -1317,3 +1535,169 @@ def wheel_angular_momentum_reward(
 
     # 应用权重
     return momentum_reward * weight
+
+
+def success_stable_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    success_reward: float = 500.0,
+    min_upright: float = 0.9,
+    min_height: float = 0.7,
+    max_tilt: float = 0.25,
+    duration: float = 2.0,
+) -> torch.Tensor:
+    """驻留成功奖励 - 给予巨大一次性奖励并提前终止
+
+    当机器人在指定时间内保持稳定站立状态时，给予巨大的正奖励。
+    这个奖励函数与 is_success_stable 终止函数配合使用，明确告诉策略
+    "平稳站住就是最终目的"，避免站立后继续探索导致摔倒。
+
+    物理意义：
+    1. 终极目标：明确策略的最终目标是平稳站立，而非其他行为
+    2. 避免过度探索：防止机器人站立后继续探索而摔倒
+    3. 效率提升：一旦达成目标立即终止，节省训练时间
+
+    成功标准：
+    1. 投影重力 Z 分量 >= min_upright（默认 0.9）
+    2. 身体高度 >= min_height（默认 0.7m）
+    3. 倾斜角度 <= max_tilt（默认 0.25 rad）
+    4. 持续时间 >= duration（默认 2.0 秒）
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 资产配置
+        success_reward: 成功奖励值（默认 500.0）
+        min_upright: 最小直立度（投影重力z分量）
+        min_height: 最小站立高度
+        max_tilt: 最大倾斜角度
+        duration: 持续站立时间阈值
+
+    Returns:
+        成功奖励值（仅在首次达到时给予一次）
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # 获取机器人状态
+    projected_gravity = asset.data.projected_gravity_b[:, 2]  # Z轴投影重力
+    body_height = asset.data.root_pos_w[:, 2]  # 身体高度
+    tilt_angle = torch.acos(torch.clamp(projected_gravity, -1.0, 1.0))  # 倾斜角度
+
+    # 判断是否达到稳定站立标准
+    is_upright = projected_gravity >= min_upright
+    is_high_enough = body_height >= min_height
+    is_not_tilted = tilt_angle <= max_tilt
+
+    # 所有条件都满足
+    current_success = torch.logical_and(is_upright, torch.logical_and(is_high_enough, is_not_tilted))
+
+    # 持续时间检查
+    if not hasattr(env, "success_stable_reward_timer"):
+        env.success_stable_reward_timer = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+        env.success_stable_reward_given = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+    # 更新计时器
+    env.success_stable_reward_timer = torch.where(
+        current_success,
+        env.success_stable_reward_timer + env.step_dt,
+        torch.zeros_like(env.success_stable_reward_timer)
+    )
+
+    # 检查是否持续足够时间且尚未给予奖励
+    sustained_success = env.success_stable_reward_timer >= duration
+    should_give_reward = torch.logical_and(sustained_success, torch.logical_not(env.success_stable_reward_given))
+
+    # 更新奖励已给予状态
+    env.success_stable_reward_given = torch.logical_or(env.success_stable_reward_given, should_give_reward)
+
+    # 只在首次达到时给予奖励
+    reward = should_give_reward.float() * success_reward
+
+    return reward
+
+
+def height_improvement_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    target_height: float = 0.6,
+    min_height: float = 0.2,
+    reward_weight: float = 2.0,
+) -> torch.Tensor:
+    """高度改善奖励 - 鼓励机器人增加高度
+
+    物理意义：
+    1. 渐进式引导：即使未达到目标高度，也能获得奖励
+    2. 正向反馈：鼓励机器人持续尝试站立
+    3. 避免停滞：防止机器人满足于低高度状态
+
+    奖励计算：
+    - 高度 < min_height: reward = 0
+    - min_height <= 高度 < target_height: reward = weight * (height - min_height) / (target_height - min_height)
+    - 高度 >= target_height: reward = weight
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        target_height: 目标高度
+        min_height: 最小有效高度
+        reward_weight: 奖励权重
+
+    Returns:
+        高度改善奖励值（正数）
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # 获取当前高度
+    current_height = asset.data.root_pos_w[:, 2]
+
+    # 计算归一化的高度改善（0.0 - 1.0）
+    normalized_height = (current_height - min_height) / (target_height - min_height)
+
+    # 限制在 [0, 1] 范围内
+    normalized_height = torch.clamp(normalized_height, 0.0, 1.0)
+
+    # 返回奖励
+    return normalized_height * reward_weight
+
+
+def orientation_improvement_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    min_upright: float = 0.3,
+    target_upright: float = 0.9,
+    reward_weight: float = 1.0,
+) -> torch.Tensor:
+    """姿态改善奖励 - 鼓励机器人改善姿态
+
+    物理意义：
+    1. 渐进式引导：即使未完全直立，也能获得奖励
+    2. 正向反馈：鼓励机器人持续尝试纠正姿态
+    3. 避免停滞：防止机器人满足于低 upright 值
+
+    奖励计算：
+    - upright < min_upright: reward = 0
+    - min_upright <= upright < target_upright: reward = weight * (upright - min_upright) / (target_upright - min_upright)
+    - upright >= target_upright: reward = weight
+
+    Args:
+        env: 强化学习环境
+        asset_cfg: 机器人资产配置
+        min_upright: 最小有效 upright 值
+        target_upright: 目标 upright 值
+        reward_weight: 奖励权重
+
+    Returns:
+        姿态改善奖励值（正数）
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # 获取当前 upright 值（projected_gravity 的 Z 分量）
+    current_upright = asset.data.projected_gravity_b[:, 2]
+
+    # 计算归一化的姿态改善（0.0 - 1.0）
+    normalized_upright = (current_upright - min_upright) / (target_upright - min_upright)
+
+    # 限制在 [0, 1] 范围内
+    normalized_upright = torch.clamp(normalized_upright, 0.0, 1.0)
+
+    # 返回奖励
+    return normalized_upright * reward_weight

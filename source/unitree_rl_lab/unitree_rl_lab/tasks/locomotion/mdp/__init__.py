@@ -36,8 +36,15 @@ from .extended_rewards import (  # noqa: F401
     feet_stumble,
     # 两段式恢复专用自适应奖励函数
     action_rate_adaptive,  # 自适应动作变化率惩罚
+    action_rate_brake,  # 动态刹车动作变化率惩罚（三段式）
     torque_adaptive,  # 自适应扭矩惩罚
+    torque_brake,  # 动态刹车扭矩惩罚（三段式）
     contact_adaptive,  # 自适应非期望接触惩罚
+    angular_momentum_damping,  # 角动量阻尼惩罚（站立瞬间抑制翻滚）
+    success_stable_reward,  # 驻留成功奖励（站立2秒后给予巨大奖励）
+    # 阶段1新增：渐进式奖励函数
+    height_improvement_reward,  # 高度改善奖励 - 鼓励机器人增加高度
+    orientation_improvement_reward,  # 姿态改善奖励 - 鼓励机器人改善姿态
 )
 
 # 导出基础奖励函数（来自rewards.py）
@@ -110,10 +117,14 @@ from .curriculums import (  # noqa: F401
     terrain_levels_vel,
     command_levels_vel,
     difficulty_levels_two_stage,
+    # 多级姿态恢复课程
+    posture_curriculum_levels,
+    POSTURE_CURRICULUM_LEVELS,
 )
 
 # 导出终止函数
 from .terminations import (  # noqa: F401
     terrain_out_of_bounds,
     is_success_stand,
+    is_success_stable,  # 驻留成功终止函数
 )

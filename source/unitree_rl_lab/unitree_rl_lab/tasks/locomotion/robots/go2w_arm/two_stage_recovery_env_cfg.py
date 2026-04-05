@@ -333,6 +333,17 @@ class RewardsCfg:
     # Root penalties
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=0.0)
+    # Angular momentum damping - 站立瞬间抑制翻滚惯性
+    angular_momentum_damping = RewTerm(
+        func=mdp.angular_momentum_damping,
+        weight=-0.5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "damping_weight": -0.5,
+            "activation_threshold": 0.8,  # Z > 0.8 时激活
+            "axis_weight": (1.0, 1.0, 0.0),  # 惩罚 Roll 和 Pitch，不惩罚 Yaw
+        },
+    )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
@@ -349,10 +360,20 @@ class RewardsCfg:
 
     # Joint penalties
     joint_torques_l2 = RewTerm(
-        func=mdp.torque_adaptive, weight=-2.5e-5, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*"), "full_penalty_weight": -2.5e-5, "reduced_penalty_weight": -2.5e-6, "orientation_threshold": 0.5}
+        func=mdp.torque_brake,
+        weight=1.0,  # 修复：设置为 1.0，避免双重使用导致的符号翻转
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "full_penalty_weight": -2.5e-5,
+            "reduced_penalty_weight": -2.5e-7,  # 降低100倍（原为-2.5e-6）
+            "orientation_threshold_low": 0.5,
+            "orientation_threshold_high": 0.85,
+            "transition_type": "exponential",
+            "transition_smoothness": 3.0,
+        },
     )
     joint_vel_l2 = RewTerm(func=mdp.joint_vel_l2, weight=0.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
-    joint_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})
+    joint_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-5e-8, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")})  # 减少关节冲击惩罚，避免过度限制动态动作
     joint_pos_limits = RewTerm(
         func=mdp.joint_pos_limits, weight=-5.0, params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*")}
     )
@@ -390,7 +411,19 @@ class RewardsCfg:
     )
 
     # Action penalties
-    action_rate_l2 = RewTerm(func=mdp.action_rate_adaptive, weight=-0.01, params={"asset_cfg": SceneEntityCfg("robot"), "full_penalty_weight": -0.01, "reduced_penalty_weight": -0.001, "orientation_threshold": 0.5})
+    action_rate_l2 = RewTerm(
+        func=mdp.action_rate_brake,
+        weight=1.0,  # 修复：设置为 1.0，避免双重使用导致的符号翻转
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "full_penalty_weight": -0.01,
+            "reduced_penalty_weight": -0.0001,  # 降低100倍（原为-0.001）
+            "orientation_threshold_low": 0.5,
+            "orientation_threshold_high": 0.85,
+            "transition_type": "exponential",
+            "transition_smoothness": 3.0,
+        },
+    )
 
     action_mirror = RewTerm(
         func=mdp.action_mirror,
@@ -483,13 +516,52 @@ class RewardsCfg:
     # 鼓励悬空轮子急加速，利用角动量守恒产生翻滚扭矩
     wheel_angular_momentum = RewTerm(
         func=mdp.wheel_angular_momentum_reward,
-        weight=2.0,  # 较高的权重，鼓励利用角动量进行恢复
+        weight=3.0,  # 增加权重，更强调利用角动量进行恢复
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),  # 匹配所有轮子（foot）
             "wheel_joint_names": ["FR_foot_joint", "FL_foot_joint", "RR_foot_joint", "RL_foot_joint"],
             "weight": 1.0,
             "contact_threshold": 1.0,  # 接触力小于1.0N认为轮子悬空
+        },
+    )
+
+    # 驻留成功奖励 - 站立2秒后给予巨大奖励，明确告诉策略"平稳站住就是最终目的"
+    success_stable_reward = RewTerm(
+        func=mdp.success_stable_reward,
+        weight=1.0,  # 奖励值由函数内部决定，此处weight只作为开关
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["base"]),
+            "success_reward": 500.0,  # 巨大的一次性奖励
+            "min_upright": 0.85,  # 修复：从 0.9 降低到 0.85
+            "min_height": 0.65,  # 修复：从 0.7 降低到 0.65
+            "max_tilt": 0.35,  # 修复：从 0.25 增加到 0.35
+            "duration": 1.5,  # 修复：从 2.0 降低到 1.5
+        },
+    )
+
+    # 阶段1新增：渐进式奖励
+    # 高度改善奖励 - 鼓励机器人持续尝试增加高度
+    height_improvement = RewTerm(
+        func=mdp.height_improvement_reward,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["base"]),
+            "target_height": 0.6,
+            "min_height": 0.2,
+            "reward_weight": 2.0,
+        },
+    )
+
+    # 姿态改善奖励 - 鼓励机器人持续尝试纠正姿态
+    orientation_improvement = RewTerm(
+        func=mdp.orientation_improvement_reward,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["base"]),
+            "min_upright": 0.3,
+            "target_upright": 0.9,
+            "reward_weight": 1.0,
         },
     )
 
@@ -516,17 +588,35 @@ class TerminationsCfg:
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["^(?!.*foot).*$"]), "threshold": 1.0},
     )
 
+    # 驻留成功终止 - 站立2秒后提前终止
+    success_stable = DoneTerm(
+        func=mdp.is_success_stable,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["base"]),
+            "min_upright": 0.85,  # 修复：从 0.9 降低到 0.85，更容易达到
+            "min_height": 0.65,  # 修复：从 0.7 降低到 0.65
+            "max_tilt": 0.35,  # 修复：从 0.25 增加到 0.35，更宽松
+            "duration": 1.5,  # 修复：从 2.0 降低到 1.5，更快反馈
+        },
+    )
+
 
 @configclass
 class CurriculumCfg:
     """Curriculum terms for MDP."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
-    command_levels = CurrTerm(
-        func=mdp.command_levels_vel,
+    # Disable terrain levels for flat training
+    terrain_levels = None
+    # Disable command levels for recovery training
+    command_levels = None
+
+    # Enable multi-level posture recovery curriculum
+    posture_curriculum = CurrTerm(
+        func=mdp.posture_curriculum_levels,
         params={
-            "reward_term_name": "track_lin_vel_xy_exp",
-            "range_multiplier": (0.1, 1.0),
+            "check_interval": 100,      # Check every 100 episodes
+            "enable_backward": True,    # Enable backward recovery
+            "hysteresis": 0.1,         # Hysteresis factor to prevent oscillation
         },
     )
 
@@ -641,25 +731,11 @@ class TwoStageRecoveryEnvCfg(ManagerBasedRLEnvCfg):
 
         # ------------------------------Events------------------------------
         # Update event parameters for base link
-        # 探索期：大幅放开 roll 范围至 ±1.6 rad (±90°) 以训练两段式恢复能力
-        self.events.randomize_reset_base.params = {
-            "pose_range": {
-                "x": (-0.2, 0.2),
-                "y": (-0.2, 0.2),
-                "z": (0.35, 0.5),
-                "roll": (-1.6, 1.6),  # ±90°，大幅放开以训练侧倾恢复能力
-                "pitch": (-0.3, 0.3),
-                "yaw": (-3.14, 3.14),
-            },
-            "velocity_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "z": (-0.05, 0.05),
-                "roll": (-0.1, 0.1),
-                "pitch": (-0.1, 0.1),
-                "yaw": (-0.1, 0.1),
-            },
-        }
+        # 使用多级姿态恢复课程 - 从Level 0开始（±5°，标准站立高度）
+        # 课程会根据表现自动增加难度到Level 3（±180°，完全范围）
+        # 修复：更新 params 中的字段，而不是替换整个 params
+        self.events.randomize_reset_base.params["pose_range"] = mdp.POSTURE_CURRICULUM_LEVELS[0]["pose_range"].copy()
+        self.events.randomize_reset_base.params["velocity_range"] = mdp.POSTURE_CURRICULUM_LEVELS[0]["velocity_range"].copy()
         self.events.randomize_rigid_body_mass_base.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_rigid_body_mass_others.params["asset_cfg"].body_names = [
             f"^(?!.*{self.base_link_name}).*"
@@ -673,22 +749,34 @@ class TwoStageRecoveryEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.is_terminated.weight = 0
 
         # Root penalties
-        self.rewards.lin_vel_z_l2.weight = -2.0
-        self.rewards.ang_vel_xy_l2.weight = 0.0
+        self.rewards.lin_vel_z_l2.weight = -3.0  # 加强垂直运动惩罚，避免不必要的垂直运动
+        self.rewards.ang_vel_xy_l2.weight = 0.0  # 禁用原有的 ang_vel_xy_l2，使用新的 angular_momentum_damping
+        # Angular momentum damping - 站立瞬间抑制翻滚惯性
+        # 阶段1修改：降低激活阈值，增加阻尼强度
+        self.rewards.angular_momentum_damping.weight = -1.0  # 增加到 -1.0，更强阻尼
+        self.rewards.angular_momentum_damping.params["asset_cfg"] = SceneEntityCfg("robot", body_names=[self.base_link_name])
+        self.rewards.angular_momentum_damping.params["damping_weight"] = -1.0  # 增加到 -1.0
+        self.rewards.angular_momentum_damping.params["activation_threshold"] = 0.5  # 降低到 0.5，更早激活
+        self.rewards.angular_momentum_damping.params["axis_weight"] = (1.0, 1.0, 0.0)  # 惩罚 Roll 和 Pitch
         self.rewards.flat_orientation_l2.weight = 0.0
-        self.rewards.base_height_l2.weight = -5.0
+        self.rewards.base_height_l2.weight = -6.0  # 增加高度控制权重，更强调保持正确高度
         self.rewards.base_height_l2.params["target_height"] = 0.40
         self.rewards.base_height_l2.params["asset_cfg"].body_names = [self.base_link_name]
         self.rewards.body_lin_acc_l2.weight = 0
         self.rewards.body_lin_acc_l2.params["asset_cfg"].body_names = [self.base_link_name]
 
-        # Joint penalties - 使用自适应惩罚，允许倒地时产生大扭矩
+        # Joint penalties - 使用动态刹车惩罚，倒地时允许产生大扭矩
+        # 阶段1修改：降低触发阈值，让机制更早激活
         self.rewards.joint_torques_l2.weight = -2.5e-5
         self.rewards.joint_torques_l2.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
         self.rewards.joint_torques_l2.params["full_penalty_weight"] = -2.5e-5
-        self.rewards.joint_torques_l2.params["reduced_penalty_weight"] = -2.5e-6  # 倒地时降低10倍
-        self.rewards.joint_torques_l2.params["orientation_threshold"] = 0.5  # Z<0.5时降低惩罚
-        self.rewards.joint_pos_limits.weight = -5.0
+        self.rewards.joint_torques_l2.params["reduced_penalty_weight"] = -2.5e-7  # 倒地时降低100倍
+        self.rewards.joint_torques_l2.params["orientation_threshold_low"] = 0.3  # 降低到 0.3，更早开始过渡
+        self.rewards.joint_torques_l2.params["orientation_threshold_high"] = 0.7  # 降低到 0.7，更早达到全额惩罚
+        self.rewards.joint_torques_l2.params["transition_type"] = "exponential"  # 指数过渡
+        self.rewards.joint_torques_l2.params["transition_smoothness"] = 3.0  # 平滑度
+        # 阶段1修改：降低关节限制惩罚权重，允许机器人更接近关节极限
+        self.rewards.joint_pos_limits.weight = -2.0  # 从 -5.0 降低到 -2.0
         self.rewards.joint_pos_limits.params["asset_cfg"].joint_names = self.leg_joint_names + self.arm_joint_names
         self.rewards.joint_vel_limits.weight = 0
         self.rewards.joint_vel_limits.params["asset_cfg"].joint_names = self.wheel_joint_names
@@ -700,11 +788,15 @@ class TwoStageRecoveryEnvCfg(ManagerBasedRLEnvCfg):
             ["FL_(hip|thigh|calf).*", "RR_(hip|thigh|calf).*"],
         ]
 
-        # Action penalties - 使用自适应惩罚，允许倒地时疯狂探索
+        # Action penalties - 使用动态刹车惩罚，倒地时允许疯狂探索
+        # 阶段1修改：降低触发阈值，让机制更早激活
         self.rewards.action_rate_l2.weight = -0.01
         self.rewards.action_rate_l2.params["full_penalty_weight"] = -0.01
-        self.rewards.action_rate_l2.params["reduced_penalty_weight"] = -0.001  # 倒地时降低10倍
-        self.rewards.action_rate_l2.params["orientation_threshold"] = 0.5  # Z<0.5时降低惩罚
+        self.rewards.action_rate_l2.params["reduced_penalty_weight"] = -0.0001  # 倒地时降低100倍
+        self.rewards.action_rate_l2.params["orientation_threshold_low"] = 0.3  # 降低到 0.3，更早开始过渡
+        self.rewards.action_rate_l2.params["orientation_threshold_high"] = 0.7  # 降低到 0.7，更早达到全额惩罚
+        self.rewards.action_rate_l2.params["transition_type"] = "exponential"  # 指数过渡
+        self.rewards.action_rate_l2.params["transition_smoothness"] = 3.0  # 平滑度
 
         # Contact sensor - 使用自适应惩罚，允许倒地时借力
         self.rewards.undesired_contacts.weight = -1.0
@@ -732,11 +824,41 @@ class TwoStageRecoveryEnvCfg(ManagerBasedRLEnvCfg):
         self.rewards.feet_height_body.weight = 0
         self.rewards.feet_height_body.params["target_height"] = -0.2
         self.rewards.feet_height_body.params["asset_cfg"].body_names = [self.foot_link_name]
-        self.rewards.upward.weight = 5.0  # 基于姿态的向上奖励，权重+5.0，高权重促进恢复
+        self.rewards.upward.weight = 8.0  # 基于姿态的向上奖励，权重+8.0，更强调恢复能力
+
+        # 驻留成功奖励 - 站立2秒后给予巨大奖励，明确告诉策略"平稳站住就是最终目的"
+        self.rewards.success_stable_reward.weight = 1.0
+        self.rewards.success_stable_reward.params["asset_cfg"] = SceneEntityCfg("robot", body_names=[self.base_link_name])
+        self.rewards.success_stable_reward.params["success_reward"] = 500.0  # 巨大的一次性奖励
+        self.rewards.success_stable_reward.params["min_upright"] = 0.80  # 降低到0.80，更容易达到
+        self.rewards.success_stable_reward.params["min_height"] = 0.60  # 降低到0.60，更容易达到
+        self.rewards.success_stable_reward.params["max_tilt"] = 0.40  # 增加到0.40，更宽松
+        self.rewards.success_stable_reward.params["duration"] = 1.0  # 缩短到1.0秒，更快反馈
+
+        # 阶段1新增：渐进式奖励参数设置
+        # 高度改善奖励
+        self.rewards.height_improvement.weight = 1.0
+        self.rewards.height_improvement.params["asset_cfg"] = SceneEntityCfg("robot", body_names=[self.base_link_name])
+        self.rewards.height_improvement.params["target_height"] = 0.6
+        self.rewards.height_improvement.params["min_height"] = 0.2
+        self.rewards.height_improvement.params["reward_weight"] = 2.0
+
+        # 姿态改善奖励
+        self.rewards.orientation_improvement.weight = 1.0
+        self.rewards.orientation_improvement.params["asset_cfg"] = SceneEntityCfg("robot", body_names=[self.base_link_name])
+        self.rewards.orientation_improvement.params["min_upright"] = 0.3
+        self.rewards.orientation_improvement.params["target_upright"] = 0.9
+        self.rewards.orientation_improvement.params["reward_weight"] = 1.0
 
         # ------------------------------Terminations------------------------------
         # Disable illegal contact termination
         self.terminations.illegal_contact = None
+        # Enable success_stable termination - 站立1.0秒后提前终止
+        self.terminations.success_stable.params["asset_cfg"] = SceneEntityCfg("robot", body_names=[self.base_link_name])
+        self.terminations.success_stable.params["min_upright"] = 0.80  # 降低到0.80，更容易达到
+        self.terminations.success_stable.params["min_height"] = 0.60  # 降低到0.60，更容易达到
+        self.terminations.success_stable.params["max_tilt"] = 0.40  # 增加到0.40，更宽松
+        self.terminations.success_stable.params["duration"] = 1.0  # 缩短到1.0秒，更快反馈
 
         # ------------------------------Curriculums------------------------------
         # Disable command levels curriculum
@@ -799,6 +921,8 @@ class TwoStageRecoveryFlatEnvCfg(TwoStageRecoveryEnvCfg):
         # ==================== Curriculum ====================
         # Disable terrain difficulty curriculum (no terrain on flat ground)
         self.curriculum.terrain_levels = None
+        # Enable posture recovery curriculum for progressive learning
+        # Note: posture_curriculum is already enabled in base CurriculumCfg
 
         # ==================== Re-disable zero-weight rewards ====================
         self.disable_zero_weight_rewards()
